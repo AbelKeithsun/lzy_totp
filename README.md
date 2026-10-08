@@ -58,12 +58,19 @@ flutter build apk --release
 
 # macOS 桌面端
 flutter build macos --release
+
+# 打包 macOS 安装镜像（.dmg，内含 Applications 快捷方式，可拖拽安装）
+mkdir -p /tmp/dmg_stage
+cp -R build/macos/Build/Products/Release/lzy_totp.app /tmp/dmg_stage/
+ln -s /Applications /tmp/dmg_stage/Applications
+hdiutil create -volname "lzy_totp 1.0.1" -srcfolder /tmp/dmg_stage \
+  -ov -format UDZO dist/lzy_totp-1.0.1-macos.dmg
 ```
 
 APK 产物在 `build/app/outputs/flutter-apk/`，Release 已开启 R8 代码压缩与资源瘦身
 （`android/app/build.gradle.kts` + `proguard-rules.pro`）。
 
-macOS 产物在 `build/macos/Build/Products/Release/lzy_totp.app`（约 43.6 MB），
+macOS 产物在 `build/macos/Build/Products/Release/lzy_totp.app`（约 43.3 MB），
 双击即可运行；窗口默认 420×640、最小 360×480。
 
 ### 实测体积（Flutter 3.44.4，split-per-abi release）
@@ -104,3 +111,45 @@ macOS 产物在 `build/macos/Build/Products/Release/lzy_totp.app`（约 43.6 MB�
 ```bash
 flutter analyze && flutter test
 ```
+
+## 发布签名
+
+### Android（正式密钥）
+
+发布构建从 `android/key.properties` 读取签名配置（该文件与 keystore **均不入库**）：
+
+```properties
+storePassword=<密码>
+keyPassword=<密码>
+keyAlias=lzy_totp
+storeFile=/Users/<你>/keystores/lzy_totp-release.jks
+```
+
+keystore 位于仓库之外（`~/keystores/lzy_totp-release.jks`），密码备份在同目录的
+`lzy_totp-keystore-info.txt`。**请务必备份这两个文件**：密钥丢失后将无法为已安装用户
+发布升级包。
+
+`android/app/build.gradle.kts` 里做了回退处理——`key.properties` 不存在时自动使用
+debug 签名，所以直接 clone 本仓库的人也能 `flutter build apk`，无需你的密钥。
+
+验证签名（Android SDK build-tools）：
+
+```bash
+apksigner verify --print-certs build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+# 应显示 CN=lzy_totp ... SHA-256: 25ad01d9...c88f95
+```
+
+⚠️ v1.0.0 的旧 APK 使用 debug 密钥签名，与 v1.0.1 起使用的正式密钥**签名不同**，
+从旧版升级需要先卸载再安装。
+
+### macOS（ad-hoc 签名）
+
+macOS 产物未做 Apple Developer ID 签名与公证（`Signature=adhoc`），首次打开需绕过
+Gatekeeper：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/lzy_totp.app
+```
+
+或右键点击 App 选择「打开」。要做正式分发需申请 Apple Developer 账号并配置
+Developer ID 证书 + 公证流程。
