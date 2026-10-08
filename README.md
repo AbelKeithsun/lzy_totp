@@ -1,0 +1,106 @@
+# lzy_totp — 自制 TOTP 验证器
+
+Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authenticator 的核心功能。
+**一套代码同时构建 Android 与 macOS 两端。**
+
+## 功能
+
+- **扫码添加**：识别 `otpauth://totp/...` 二维码（mobile_scanner + ML Kit，仅 Android/iOS）
+- **手动添加**：输入 Base32 密钥，支持位数（6/8）、周期（30/60s）、算法（SHA1/SHA256/SHA512）
+  （桌面端自动聚焦密钥框，打开即 Cmd+V 粘贴）
+- **TOTP 计算**：RFC 6238，测试向量全覆盖（SHA1/SHA256/SHA512）
+- **加密存储**：密钥经 flutter_secure_storage 加密落盘
+  - Android：AES-GCM + RSA 密钥包裹（密钥由 Android Keystore 保管）
+  - iOS：Keychain
+  - macOS：Keychain（传统 keychain，`usesDataProtectionKeychain: false`，无需签名 entitlement）
+- **首页**：验证码实时刷新、倒计时圆环、点击复制、左滑删除
+  （桌面端列表项额外提供显式复制按钮）
+
+## 平台支持
+
+| 平台 | 状态 | 扫码添加 |
+|---|---|---|
+| Android | ✅ | 支持 |
+| macOS | ✅ | 不支持（自动隐藏入口，直接进手动粘贴页） |
+| iOS | 工程已生成 | 支持 |
+
+平台差异集中判断于 `lib/utils/platform_utils.dart`（`AppPlatform.isDesktop` / `supportsScan`），
+业务逻辑两端完全共用。
+
+## 项目结构
+
+```
+lib/
+  main.dart                     # 入口，深色主题
+  models/account.dart           # 账户模型 + otpauth:// URI 解析
+  services/totp_service.dart    # TOTP 计算（otp 包封装）
+  services/storage_service.dart # 加密本地存储（按平台选择 Keychain 策略）
+  utils/platform_utils.dart     # 平台能力判断
+  pages/account_list_page.dart  # 首页列表
+  pages/scan_page.dart          # 扫码页
+  pages/add_account_page.dart   # 手动添加页
+test/totp_test.dart             # RFC 6238 向量 + URI 解析 + 序列化测试
+test/widget_test.dart           # 启动冒烟测试
+```
+
+## 构建
+
+```bash
+# 开发调试
+flutter run                 # 自动选择设备
+flutter run -d macos        # 指定 macOS 桌面端
+
+# Release APK（按 CPU 架构拆分，单包更小）
+flutter build apk --release --split-per-abi
+
+# 单一大包
+flutter build apk --release
+
+# macOS 桌面端
+flutter build macos --release
+```
+
+APK 产物在 `build/app/outputs/flutter-apk/`，Release 已开启 R8 代码压缩与资源瘦身
+（`android/app/build.gradle.kts` + `proguard-rules.pro`）。
+
+macOS 产物在 `build/macos/Build/Products/Release/lzy_totp.app`（约 43.6 MB），
+双击即可运行；窗口默认 420×640、最小 360×480。
+
+### 实测体积（Flutter 3.44.4，split-per-abi release）
+
+| 架构 | 大小 |
+|---|---|
+| arm64-v8a（主流手机） | **18.7 MB** |
+| armeabi-v7a（旧手机） | 16.0 MB |
+| x86_64（模拟器） | 20.2 MB |
+
+体积大头是 Flutter 引擎（libflutter.so ≈ 11.6MB + Dart AOT ≈ 5MB），属正常水平。
+
+### 扫码模型：bundled ↔ unbundled
+
+当前使用 **unbundled ML Kit**（`android/gradle.properties` 里
+`dev.steenbakker.mobile_scanner.useUnbundled=true`），扫码模型首次使用时
+经 Google Play Services 在线下载，APK 省约 6MB。
+**代价：无 GMS 的手机（部分国产 ROM / 华为）扫码可能不可用。**
+删掉该行改回 bundled 即可离线可用，APK 涨到约 24.8MB。
+
+### 国内网络构建
+
+- `android/build.gradle.kts` 与 `android/settings.gradle.kts` 已将
+  阿里云 Maven 镜像置于官方源之前；
+- 构建时设置环境变量走 Flutter 国内镜像下载引擎产物：
+  `export FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn`
+- 若 Gradle 拉依赖出现 TLS 握手失败（`Remote host terminated the handshake`），
+  在 `~/.gradle/gradle.properties` 配置代理：
+  ```properties
+  systemProp.http.proxyHost=127.0.0.1
+  systemProp.http.proxyPort=7897
+  systemProp.https.proxyHost=127.0.0.1
+  systemProp.https.proxyPort=7897
+  ```
+
+## 测试
+
+```bash
+flutter analyze && flutter test
+```
