@@ -32,6 +32,8 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+# 发布产物（本地打包用，不进版本库）
+/dist/
 
 # Symbolication related
 app.*.symbols
