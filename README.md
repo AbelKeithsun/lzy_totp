@@ -30,18 +30,45 @@ Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authentica
 ## 项目结构
 
 ```
-lib/
-  main.dart                     # 入口，深色主题
-  models/account.dart           # 账户模型 + otpauth:// URI 解析
-  services/totp_service.dart    # TOTP 计算（otp 包封装）
-  services/storage_service.dart # 加密本地存储（按平台选择 Keychain 策略）
-  utils/platform_utils.dart     # 平台能力判断
-  pages/account_list_page.dart  # 首页列表
-  pages/scan_page.dart          # 扫码页
-  pages/add_account_page.dart   # 手动添加页
-test/totp_test.dart             # RFC 6238 向量 + URI 解析 + 序列化测试
-test/widget_test.dart           # 启动冒烟测试
+lib/                              # Flutter App（Android + macOS）
+  main.dart                       # 入口，深色主题
+  models/account.dart             # → 转发到 totp_core 的账户模型
+  services/totp_service.dart      # → 转发到 totp_core 的 TOTP 计算
+  services/storage_service.dart   # 加密本地存储（按平台选择 Keychain 策略）
+  utils/platform_utils.dart       # 平台能力判断
+  pages/account_list_page.dart    # 首页列表
+  pages/scan_page.dart            # 扫码页
+  pages/add_account_page.dart     # 手动添加页
+packages/totp_core/               # 共享内核（纯 Dart，App / CLI / MCP 共用）
+  lib/src/totp.dart               # TOTP 计算（RFC 6238）
+  lib/src/account.dart            # 账户模型 + otpauth:// 解析 + aiAllowed 标记
+  lib/src/vault.dart              # AES-256-GCM 加密 vault
+  lib/src/policy.dart             # AI 访问策略（默认拒绝）
+  lib/src/audit.dart              # 审计日志
+  lib/src/paths.dart              # 数据目录解析
+tools/totp_cli/                   # 命令行 + MCP server
+  bin/lzy_totp.dart               # CLI 入口
+  lib/cli.dart                    # 命令实现
+  lib/mcp_server.dart             # MCP stdio server（7 个工具）
+docs/ai-access.md                 # 让 AI 查询验证码：安装、用法、安全边界
+test/totp_test.dart               # RFC 6238 向量 + URI 解析 + 序列化测试
+test/widget_test.dart             # 启动冒烟测试
 ```
+
+## 让 AI 查询验证码
+
+除了给人用的 App，本仓库还提供一个给 AI agent 调用的取码接口——CLI 与 MCP server 两种外壳、
+同一个加密 vault、同一套「默认拒绝」策略：
+
+```bash
+lzy-totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub   # 录入（默认不放行）
+lzy-totp allow github                                           # 显式放行给 AI
+lzy-totp code github --json                                     # 取码
+lzy-totp mcp                                                     # 以 MCP stdio server 运行
+```
+
+核心安全设计：**只返回一次性验证码，永不返回密钥**；未显式放行的账号一律拒绝；
+每次取码（含被拒绝的）都写审计日志。完整说明见 [docs/ai-access.md](docs/ai-access.md)。
 
 ## 构建
 
@@ -109,7 +136,14 @@ macOS 产物在 `build/macos/Build/Products/Release/lzy_totp.app`（约 43.3 MB�
 ## 测试
 
 ```bash
+# Flutter App
 flutter analyze && flutter test
+
+# 共享内核（TOTP 向量、加密 vault、策略、审计）
+cd packages/totp_core && dart test
+
+# CLI 与 MCP server
+cd tools/totp_cli && dart test
 ```
 
 ## 发布签名
