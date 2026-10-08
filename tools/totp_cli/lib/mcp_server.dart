@@ -20,7 +20,7 @@ class McpToolError implements Exception {
 ///
 /// 安全设计：
 /// - 工具面**永不返回密钥**，只返回一次性验证码与元数据；
-/// - 取码前强制走 [AiAccessPolicy]，默认拒绝；
+/// - 取码前强制走 [AiAccessPolicy]（默认放行，被 deny 的账号拒绝）；
 /// - 每次取码（无论成功或拒绝）都写审计日志。
 class McpServer {
   McpServer({
@@ -110,7 +110,7 @@ class McpServer {
           'serverInfo': {'name': serverName, 'version': serverVersion},
           'instructions':
               'lzy_totp 一次性验证码（TOTP）服务。用 list_accounts 查看可用账号，'
-                  '用 generate_totp 取当前验证码。注意：未明确放行的账号会被拒绝。',
+                  '用 generate_totp 取当前验证码（默认放行；被 deny 的账号会拒绝并说明原因）。',
         };
       case 'ping':
         return <String, dynamic>{};
@@ -164,7 +164,7 @@ class McpServer {
     }
     return _encode({
       'accounts': accounts.map(_metadata).toList(),
-      'note': 'ai_allowed=false 的账号调用 generate_totp 会被拒绝。',
+      'note': '默认放行；ai_allowed=false 表示该账号已被显式禁止，调用 generate_totp 会被拒绝。',
     });
   }
 
@@ -183,7 +183,7 @@ class McpServer {
         account: account.displayTitle,
         result: 'denied',
         actor: 'mcp',
-        note: 'ai_allowed=false',
+        note: 'ai_blocked',
       ));
       throw McpToolError('拒绝取码：$denial');
     }
@@ -224,8 +224,8 @@ class McpServer {
       digits: args['digits'] as int? ?? 6,
       period: args['period'] as int? ?? 30,
       algorithm: (args['algorithm'] as String? ?? 'SHA1').toUpperCase(),
-      // 默认拒绝：只有显式传 allow_ai=true 才放行
-      aiAllowed: args['allow_ai'] as bool? ?? false,
+      // 默认放行：只有显式传 block_ai=true 才禁止
+      aiAllowed: !(args['block_ai'] as bool? ?? false),
     );
     accounts.add(account);
     await vault.save(accounts);
@@ -243,7 +243,7 @@ class McpServer {
     final name = _requireString(args, 'uri');
     final parsed = TotpAccount.fromOtpAuthUri(
       name,
-      aiAllowed: args['allow_ai'] as bool? ?? false,
+      aiAllowed: !(args['block_ai'] as bool? ?? false),
     );
     if (parsed == null) {
       throw McpToolError('otpauth URI 解析失败（仅支持 otpauth://totp/... 且需包含 secret）。');
@@ -409,7 +409,7 @@ const List<Map<String, dynamic>> _toolDefinitions = [
   {
     'name': 'generate_totp',
     'description': '生成指定账号当前的一次性验证码（30 秒内有效）。'
-        '仅对已放行（ai_allowed=true）的账号有效，否则返回错误。',
+        '默认放行；若该账号被显式禁止（ai_allowed=false）则返回错误。',
     'inputSchema': {
       'type': 'object',
       'properties': {
@@ -420,7 +420,7 @@ const List<Map<String, dynamic>> _toolDefinitions = [
   },
   {
     'name': 'add_account',
-    'description': '添加一个 TOTP 账号（默认不允许 AI 取码，需显式 allow_ai=true）。',
+    'description': '添加一个 TOTP 账号（默认允许 AI 取码；传 block_ai=true 可禁止）。',
     'inputSchema': {
       'type': 'object',
       'properties': {
@@ -431,20 +431,20 @@ const List<Map<String, dynamic>> _toolDefinitions = [
         'digits': {'type': 'integer', 'enum': [6, 8]},
         'period': {'type': 'integer', 'enum': [30, 60]},
         'algorithm': {'type': 'string', 'enum': ['SHA1', 'SHA256', 'SHA512']},
-        'allow_ai': {'type': 'boolean', 'description': '是否允许 AI 取码，默认 false'},
+        'block_ai': {'type': 'boolean', 'description': '是否禁止 AI 取码，默认 false（即允许）'},
       },
       'required': ['account', 'secret'],
     },
   },
   {
     'name': 'add_from_uri',
-    'description': '从 otpauth:// URI 添加账号（默认不允许 AI 取码）。',
+    'description': '从 otpauth:// URI 添加账号（默认允许 AI 取码）。',
     'inputSchema': {
       'type': 'object',
       'properties': {
         'account': {'type': 'string', 'description': '账号名称'},
         'uri': {'type': 'string', 'description': 'otpauth://totp/... 完整 URI'},
-        'allow_ai': {'type': 'boolean'},
+        'block_ai': {'type': 'boolean', 'description': '是否禁止 AI 取码'},
       },
       'required': ['account', 'uri'],
     },
@@ -462,7 +462,7 @@ const List<Map<String, dynamic>> _toolDefinitions = [
   },
   {
     'name': 'set_ai_allowed',
-    'description': '放行或撤销某个账号的 AI 取码权限。',
+    'description': '允许或禁止某个账号的 AI 取码权限（默认允许）。',
     'inputSchema': {
       'type': 'object',
       'properties': {

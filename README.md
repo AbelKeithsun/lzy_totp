@@ -43,7 +43,7 @@ packages/totp_core/               # 共享内核（纯 Dart，App / CLI / MCP �
   lib/src/totp.dart               # TOTP 计算（RFC 6238）
   lib/src/account.dart            # 账户模型 + otpauth:// 解析 + aiAllowed 标记
   lib/src/vault.dart              # AES-256-GCM 加密 vault
-  lib/src/policy.dart             # AI 访问策略（默认拒绝）
+  lib/src/policy.dart             # AI 访问策略（默认放行 + deny 黑名单）
   lib/src/audit.dart              # 审计日志
   lib/src/paths.dart              # 数据目录解析
 tools/totp_cli/                   # 命令行 + MCP server
@@ -58,16 +58,16 @@ test/widget_test.dart             # 启动冒烟测试
 ## 让 AI 查询验证码
 
 除了给人用的 App，本仓库还提供一个给 AI agent 调用的取码接口——CLI 与 MCP server 两种外壳、
-同一个加密 vault、同一套「默认拒绝」策略：
+同一个加密 vault、同一套「默认放行 + 黑名单」策略：
 
 ```bash
-lzy-totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub   # 录入（默认不放行）
-lzy-totp allow github                                           # 显式放行给 AI
+lzy-totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub   # 录入（默认即允许 AI）
 lzy-totp code github --json                                     # 取码
+lzy-totp deny "Bank (me@x.com)"                                 # 把敏感账号排除在 AI 之外
 lzy-totp mcp                                                     # 以 MCP stdio server 运行
 ```
 
-核心安全设计：**只返回一次性验证码，永不返回密钥**；未显式放行的账号一律拒绝；
+核心安全设计：**只返回一次性验证码，永不返回密钥**；默认放行、可用 `deny` 把个别账号（银行、主邮箱等）排除在 AI 之外；
 每次取码（含被拒绝的）都写审计日志。完整说明见 [docs/ai-access.md](docs/ai-access.md)。
 
 ## 构建
@@ -139,7 +139,7 @@ macOS 产物在 `build/macos/Build/Products/Release/lzy_totp.app`（约 43.3 MB�
 # Flutter App
 flutter analyze && flutter test
 
-# 共享内核（TOTP 向量、加密 vault、策略、审计）
+# 共享内核（TOTP 向量、加密 vault、默认放行策略、审计）
 cd packages/totp_core && dart test
 
 # CLI 与 MCP server

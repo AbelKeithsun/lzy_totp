@@ -133,12 +133,11 @@ ArgParser _buildParser() {
     ..addOption('period', allowed: ['30', '60'], defaultsTo: '30')
     ..addOption('algorithm',
         allowed: ['SHA1', 'SHA256', 'SHA512'], defaultsTo: 'SHA1')
-    ..addFlag('allow-ai', negatable: false, help: '同时放行给 AI（默认不放行）');
+    ..addFlag('block-ai', negatable: false, help: '禁止 AI 取码（默认允许）');
 
   parser.addCommand('remove');
   parser.addCommand('allow');
   parser.addCommand('deny');
-
   parser
       .addCommand('audit')
       .addOption('tail', defaultsTo: '20', help: '显示最近 N 条');
@@ -160,16 +159,18 @@ lzy_totp —— 一次性验证码（TOTP）命令行 / MCP 入口
   code <名称>          输出当前验证码
   add <名称>           添加账号（--secret <Base32> 或 --uri <otpauth://...>）
   remove <名称>        删除账号
-  allow <名称>         放行给 AI（默认全部拒绝）
-  deny <名称>          撤销放行
+  allow <名称>         允许 AI 取码（默认即允许）
+  deny <名称>          禁止 AI 取码（黑名单）
   audit               查看审计日志（--tail N）
   doctor              自检
   mcp                 启动 MCP stdio server
 
 示例：
-  lzy_totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub --allow-ai
+  lzy_totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub
   lzy_totp code github --json
-  lzy_totp allow "Bank (me@x.com)"
+  lzy_totp deny "Bank (me@x.com)"     # 银行类账号排除在 AI 之外
+
+策略：默认放行，新增账号即可被 AI 取码；用 deny 关闭个别账号。
 
 全局选项：
 ${parser.usage}''';
@@ -203,7 +204,7 @@ Future<int> _list(CliContext ctx, ArgResults cmd) async {
     return ExitCode.ok;
   }
   for (final a in accounts) {
-    final flag = a.aiAllowed ? 'AI 允许' : 'AI 拒绝';
+    final flag = a.aiAllowed ? 'AI 允许' : 'AI 禁止';
     ctx.out.writeln('${a.displayTitle}  [$flag]  ${a.digits}位/${a.period}s/${a.algorithm}');
   }
   return ExitCode.ok;
@@ -225,7 +226,7 @@ Future<int> _info(CliContext ctx, ArgResults cmd) async {
     ctx.out.writeln('账号：${a.displayTitle}');
     ctx.out.writeln('id：${a.id}');
     ctx.out.writeln('参数：${a.digits} 位 / ${a.period} 秒 / ${a.algorithm}');
-    ctx.out.writeln('AI 取码：${a.aiAllowed ? '允许' : '拒绝（默认）'}');
+    ctx.out.writeln('AI 取码：${a.aiAllowed ? '允许（默认）' : '已禁止'}');
   }
   return ExitCode.ok;
 }
@@ -246,7 +247,7 @@ Future<int> _code(CliContext ctx, ArgResults cmd) async {
   if (!allowed && ctx.stdinIsTerminal) {
     // 交互终端下的人工通道：AI 非交互调用拿不到这条路径
     final ok = await ctx.confirm(
-        '账号「${account.displayTitle}」未放行给 AI。确认以人工身份查看验证码？[y/N] ');
+        '账号「${account.displayTitle}」已被禁止 AI 取码。确认以人工身份查看验证码？[y/N] ');
     if (ok) {
       allowed = true;
       overrideNote = 'human-tty-override';
@@ -259,7 +260,7 @@ Future<int> _code(CliContext ctx, ArgResults cmd) async {
       account: account.displayTitle,
       result: 'denied',
       actor: 'cli',
-      note: 'ai_allowed=false',
+      note: 'ai_blocked',
     ));
     ctx.err.writeln('拒绝取码：${AiAccessPolicy.denialReason(account)}');
     return ExitCode.denied;
@@ -306,7 +307,7 @@ Future<int> _add(CliContext ctx, ArgResults cmd) async {
     return ExitCode.usage;
   }
 
-  final allowAi = cmd['allow-ai'] as bool;
+  final allowAi = !(cmd['block-ai'] as bool);
   late final TotpAccount account;
 
   if (uri != null) {
@@ -419,7 +420,7 @@ Future<int> _setAllowed(
     actor: 'cli',
     note: 'allowed=$allowed',
   ));
-  ctx.out.writeln('${account.displayTitle} → AI 取码${allowed ? '已允许' : '已拒绝'}');
+  ctx.out.writeln('${account.displayTitle} → AI 取码${allowed ? '已允许' : '已禁止'}');
   return ExitCode.ok;
 }
 
@@ -438,7 +439,7 @@ Future<int> _audit(CliContext ctx, ArgResults cmd) async {
 
 Future<int> _doctor(CliContext ctx) async {
   final accounts = await ctx.vault.load();
-  final allowed = accounts.where((a) => a.aiAllowed).length;
+  final blocked = accounts.where((a) => !a.aiAllowed).length;
 
   ctx.out.writeln('数据目录：${ctx.paths.home}');
   for (final entry in {
@@ -452,8 +453,8 @@ Future<int> _doctor(CliContext ctx) async {
     ctx.out.writeln('  ${entry.key}：${exists ? '存在' : '不存在'}'
         '${perms == null ? '' : '（权限 $perms）'}  ${entry.value}');
   }
-  ctx.out.writeln('账号数：${accounts.length}（其中允许 AI 取码：$allowed）');
-  ctx.out.writeln('策略：默认拒绝，需逐账号 lzy_totp allow 放行');
+  ctx.out.writeln('账号数：${accounts.length}（其中禁止 AI 取码：$blocked）');
+  ctx.out.writeln('策略：默认放行，可用 lzy_totp deny 关闭个别账号');
   return ExitCode.ok;
 }
 

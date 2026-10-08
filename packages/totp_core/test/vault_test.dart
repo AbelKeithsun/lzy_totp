@@ -19,7 +19,7 @@ void main() {
     if (await tmp.exists()) await tmp.delete(recursive: true);
   });
 
-  TotpAccount account({bool aiAllowed = false, String secret = 'JBSWY3DPEHPK3PXP'}) =>
+  TotpAccount account({bool aiAllowed = true, String secret = 'JBSWY3DPEHPK3PXP'}) =>
       TotpAccount(
         id: 'id-1',
         issuer: 'GitHub',
@@ -97,16 +97,24 @@ void main() {
     });
   });
 
-  group('AI 访问策略：默认拒绝', () {
-    test('未标记的账户被拒绝', () {
-      final acc = account(aiAllowed: false);
-      expect(AiAccessPolicy.allows(acc), isFalse);
-      expect(AiAccessPolicy.denialReason(acc), contains('未标记为允许 AI 访问'));
+  group('AI 访问策略：默认放行 + 黑名单', () {
+    test('新增账号默认允许 AI 取码', () {
+      expect(TotpAccount.defaultAiAllowed, isTrue);
+      expect(AiAccessPolicy.defaultAllow, TotpAccount.defaultAiAllowed);
+      expect(AiAccessPolicy.allows(account()), isTrue);
+      expect(AiAccessPolicy.denialReason(account()), isNull);
     });
 
-    test('显式放行后才允许', () {
-      expect(AiAccessPolicy.allows(account(aiAllowed: true)), isTrue);
-      expect(AiAccessPolicy.denialReason(account(aiAllowed: true)), isNull);
+    test('显式禁止后才拒绝，且给出恢复指引', () {
+      final blocked = account(aiAllowed: false);
+      expect(AiAccessPolicy.allows(blocked), isFalse);
+      expect(AiAccessPolicy.denialReason(blocked), contains('已被显式禁止'));
+      expect(AiAccessPolicy.denialReason(blocked), contains('lzy-totp allow'));
+    });
+
+    test('禁止标记可随 vault 持久化', () async {
+      await vault.save([account(aiAllowed: false)]);
+      expect((await vault.load()).single.aiAllowed, isFalse);
     });
   });
 

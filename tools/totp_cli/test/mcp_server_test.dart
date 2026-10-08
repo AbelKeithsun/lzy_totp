@@ -124,14 +124,26 @@ void main() {
     });
   });
 
-  group('默认拒绝策略', () {
-    test('未放行的账号取码被拒绝，且不返回验证码', () async {
-      await callTool('add_account', {
+  group('默认放行 + 黑名单', () {
+    test('新增账号默认即可取码（默认放行）', () async {
+      final added = toolJson(await callTool('add_account', {
         'account': 'github',
         'secret': 'JBSWY3DPEHPK3PXP',
-      });
+      }));
+      expect(added['ai_allowed'], isTrue);
 
       final r = await callTool('generate_totp', {'account': 'github'});
+      expect(jsonDecode(toolText(r))['code'], matches(RegExp(r'^\d{6}$')));
+    });
+
+    test('显式 block_ai 的账号取码被拒绝，且不返回验证码', () async {
+      await callTool('add_account', {
+        'account': 'bank',
+        'secret': 'JBSWY3DPEHPK3PXP',
+        'block_ai': true,
+      });
+
+      final r = await callTool('generate_totp', {'account': 'bank'});
       final result = r['result'] as Map<String, dynamic>;
       expect(result['isError'], isTrue);
       expect(toolText(r), contains('拒绝取码'));
@@ -143,6 +155,7 @@ void main() {
       await callTool('add_account', {
         'account': 'bank',
         'secret': 'JBSWY3DPEHPK3PXP',
+        'block_ai': true,
       });
       await callTool('generate_totp', {'account': 'bank'});
 
@@ -153,38 +166,38 @@ void main() {
       expect(denied.single.action, 'generate_totp');
     });
 
-    test('add_account 默认不允许 AI，显式 allow_ai 才放行', () async {
+    test('add_account 默认允许 AI，block_ai=true 才禁止', () async {
       final added = toolJson(await callTool('add_account', {
         'account': 'github',
         'secret': 'JBSWY3DPEHPK3PXP',
         'issuer': 'GitHub',
       }));
-      expect(added['ai_allowed'], isFalse);
+      expect(added['ai_allowed'], isTrue);
 
-      final allowed = toolJson(await callTool('add_account', {
-        'account': 'gitlab',
+      final blocked = toolJson(await callTool('add_account', {
+        'account': 'bank',
         'secret': 'JBSWY3DPEHPK3PXP',
-        'issuer': 'GitLab',
-        'allow_ai': true,
+        'issuer': 'Bank',
+        'block_ai': true,
       }));
-      expect(allowed['ai_allowed'], isTrue);
+      expect(blocked['ai_allowed'], isFalse);
     });
 
-    test('set_ai_allowed 放行后可以取码，撤销后再次拒绝', () async {
+    test('set_ai_allowed 禁止后拒绝取码，恢复后重新可取', () async {
       await callTool('add_account', {
-        'account': 'github',
+        'account': 'bank',
         'secret': 'JBSWY3DPEHPK3PXP',
-        'issuer': 'GitHub',
+        'issuer': 'Bank',
       });
 
-      await callTool('set_ai_allowed', {'account': 'github', 'allowed': true});
-      final ok = toolJson(await callTool('generate_totp', {'account': 'github'}));
+      await callTool('set_ai_allowed', {'account': 'bank', 'allowed': false});
+      final denied = await callTool('generate_totp', {'account': 'bank'});
+      expect((denied['result'] as Map)['isError'], isTrue);
+
+      await callTool('set_ai_allowed', {'account': 'bank', 'allowed': true});
+      final ok = toolJson(await callTool('generate_totp', {'account': 'bank'}));
       expect(ok['code'], matches(RegExp(r'^\d{6}$')));
       expect(ok['remaining_seconds'], inInclusiveRange(1, 30));
-
-      await callTool('set_ai_allowed', {'account': 'github', 'allowed': false});
-      final denied = await callTool('generate_totp', {'account': 'github'});
-      expect((denied['result'] as Map)['isError'], isTrue);
     });
   });
 
@@ -200,7 +213,7 @@ void main() {
       expect(accounts, hasLength(1));
       final first = accounts.first as Map;
       expect(first['account'], 'GitHub');
-      expect(first['ai_allowed'], isFalse);
+      expect(first['ai_allowed'], isTrue);
       expect(jsonEncode(list).contains('JBSWY3DPEHPK3PXP'), isFalse,
           reason: '工具输出绝不能带出密钥');
     });
@@ -254,7 +267,6 @@ void main() {
         'account': 'github',
         'secret': 'JBSWY3DPEHPK3PXP',
         'issuer': 'GitHub',
-        'allow_ai': true,
       });
       toolJson(await callTool('remove_account', {'account': 'github'}));
       final r = await callTool('generate_totp', {'account': 'github'});
@@ -267,7 +279,6 @@ void main() {
         'account': 'github',
         'secret': 'JBSWY3DPEHPK3PXP',
         'issuer': 'GitHub',
-        'allow_ai': true,
       });
       await callTool('generate_totp', {'account': 'github'});
       final entries = await audit.tail(10);

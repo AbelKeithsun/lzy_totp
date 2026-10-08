@@ -10,8 +10,13 @@ class TotpAccount {
     this.digits = 6,
     this.period = 30,
     this.algorithm = 'SHA1',
-    this.aiAllowed = false,
+    this.aiAllowed = defaultAiAllowed,
   });
+
+  /// 新增账号时是否默认允许 AI 取码。
+  ///
+  /// **默认放行**：AI 可直接取码；如需关闭个别账号用 `lzy-totp deny <名称>`。
+  static const bool defaultAiAllowed = true;
 
   /// 唯一 ID（用于列表增删）
   final String id;
@@ -36,7 +41,8 @@ class TotpAccount {
 
   /// 是否允许 AI / 自动化工具查询该账户的验证码。
   ///
-  /// **默认 false（默认拒绝）**：只有显式放行的账户才允许通过 CLI / MCP 取码。
+  /// **默认 true（默认放行）**：新增账号即可被 AI 取码；
+  /// 如要关闭某个账号，用 `lzy-totp deny <名称>`（或 MCP 的 `set_ai_allowed`）设为 false。
   bool aiAllowed;
 
   Map<String, dynamic> toJson() => {
@@ -58,7 +64,7 @@ class TotpAccount {
         digits: json['digits'] as int? ?? 6,
         period: json['period'] as int? ?? 30,
         algorithm: json['algorithm'] as String? ?? 'SHA1',
-        aiAllowed: json['aiAllowed'] as bool? ?? false,
+        aiAllowed: json['aiAllowed'] as bool? ?? defaultAiAllowed,
       );
 
   static String encodeList(List<TotpAccount> accounts) =>
@@ -76,7 +82,7 @@ class TotpAccount {
   static TotpAccount? fromOtpAuthUri(
     String raw, {
     String? id,
-    bool aiAllowed = false,
+    bool aiAllowed = defaultAiAllowed,
   }) {
     final uri = Uri.tryParse(raw.trim());
     if (uri == null || uri.scheme != 'otpauth') return null;

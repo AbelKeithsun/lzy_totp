@@ -69,10 +69,10 @@ void main() {
 
       expect(await run(['list']), ExitCode.ok);
       expect(out.text, contains('GitHub'));
-      expect(out.text, contains('AI 拒绝'));
+      expect(out.text, contains('AI 允许'));
 
       expect(await run(['info', 'github']), ExitCode.ok);
-      expect(out.text, contains('AI 取码：拒绝（默认）'));
+      expect(out.text, contains('AI 取码：允许（默认）'));
     });
 
     test('add --uri 解析 otpauth', () async {
@@ -117,12 +117,20 @@ void main() {
     });
   });
 
-  group('CLI 默认拒绝与人工放行', () {
+  group('CLI 默认放行与黑名单', () {
     setUp(() async {
-      await run(['add', 'bank', '--secret', 'JBSWY3DPEHPK3PXP', '--issuer', 'Bank']);
+      // 默认放行：不加 --block-ai 即可被 AI 取码
+      await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP', '--issuer', 'GitHub']);
+      // 黑名单：显式禁止
+      await run(['add', 'bank', '--secret', 'JBSWY3DPEHPK3PXP', '--issuer', 'Bank', '--block-ai']);
     });
 
-    test('未放行时拒绝取码（退出码 2），且不输出验证码', () async {
+    test('默认放行的账号直接可取码', () async {
+      expect(await run(['code', 'github']), ExitCode.ok);
+      expect(out.text.trim(), matches(RegExp(r'^\d{6}$')));
+    });
+
+    test('add --block-ai 的账号被拒绝取码（退出码 2），且不输出验证码', () async {
       expect(await run(['code', 'bank']), ExitCode.denied);
       expect(err.text, contains('拒绝取码'));
       expect(out.text, isNot(matches(RegExp(r'\b\d{6}\b'))));
@@ -162,7 +170,7 @@ void main() {
       expect(await run(['code', 'bank'], ctx: ctx), ExitCode.denied);
     });
 
-    test('allow 之后可以取码（退出码 0）', () async {
+    test('allow 恢复后可以取码（退出码 0）', () async {
       expect(await run(['allow', 'bank']), ExitCode.ok);
       expect(await run(['code', 'bank']), ExitCode.ok);
       final entries = await audit.tail(5);
@@ -172,19 +180,20 @@ void main() {
       );
     });
 
-    test('deny 之后再次拒绝', () async {
-      await run(['allow', 'bank']);
-      expect(await run(['deny', 'bank']), ExitCode.ok);
-      expect(await run(['code', 'bank']), ExitCode.denied);
+    test('deny 默认放行的账号后立即拒绝', () async {
+      expect(await run(['code', 'github']), ExitCode.ok);
+      expect(await run(['deny', 'github']), ExitCode.ok);
+      expect(await run(['code', 'github']), ExitCode.denied);
+      expect(await run(['allow', 'github']), ExitCode.ok);
+      expect(await run(['code', 'github']), ExitCode.ok);
     });
 
     test('code --json 输出结构化结果', () async {
-      await run(['allow', 'bank']);
-      await run(['code', 'bank', '--json']);
+      await run(['code', 'github', '--json']);
       final parsed = jsonDecode(out.text) as Map<String, dynamic>;
       expect(parsed['code'], matches(RegExp(r'^\d{6}$')));
       expect(parsed['remaining_seconds'], inInclusiveRange(1, 30));
-      expect(parsed['account'], contains('Bank'));
+      expect(parsed['account'], contains('GitHub'));
     });
   });
 
@@ -197,10 +206,10 @@ void main() {
 
     test('doctor 输出路径与统计', () async {
       await run(['add', 'a', '--secret', 'JBSWY3DPEHPK3PXP']);
-      await run(['add', 'b', '--secret', 'JBSWY3DPEHPK3PXP', '--allow-ai']);
+      await run(['add', 'b', '--secret', 'JBSWY3DPEHPK3PXP', '--block-ai']);
       expect(await run(['doctor']), ExitCode.ok);
-      expect(out.text, contains('账号数：2（其中允许 AI 取码：1）'));
-      expect(out.text, contains('默认拒绝'));
+      expect(out.text, contains('账号数：2（其中禁止 AI 取码：1）'));
+      expect(out.text, contains('默认放行'));
     });
 
     test('remove 删除账号', () async {
@@ -212,7 +221,7 @@ void main() {
 
   group('CLI 作为 MCP 启动器', () {
     test('mcp 命令把 stdin 交给 MCP server 并输出协议响应', () async {
-      await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP', '--issuer', 'GitHub', '--allow-ai']);
+      await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP', '--issuer', 'GitHub']);
 
       final ctx = CliContext(
         paths: paths,

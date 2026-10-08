@@ -14,7 +14,7 @@ void main() {
       expect(acc.digits, 6);
       expect(acc.period, 30);
       expect(acc.algorithm, 'SHA1');
-      expect(acc.aiAllowed, isFalse, reason: '默认拒绝 AI 访问');
+      expect(acc.aiAllowed, isTrue, reason: '默认放行 AI 访问');
     });
 
     test('无 issuer 参数时从 label 前缀取', () {
@@ -113,11 +113,11 @@ void main() {
       expect(decoded.aiAllowed, isTrue);
     });
 
-    test('旧数据无 aiAllowed 字段时按 false 处理', () {
+    test('旧数据无 aiAllowed 字段时按默认（放行）处理', () {
       final decoded = TotpAccount.decodeList(
         '[{"id":"1","issuer":"G","label":"a","secret":"JBSWY3DPEHPK3PXP"}]',
       ).single;
-      expect(decoded.aiAllowed, isFalse);
+      expect(decoded.aiAllowed, TotpAccount.defaultAiAllowed);
       expect(decoded.digits, 6);
     });
   });
