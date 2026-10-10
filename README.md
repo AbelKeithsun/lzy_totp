@@ -291,10 +291,23 @@ App 的账号存在系统钥匙串（`flutter_secure_storage_service` / `totp_ac
 
 真正能免掉弹窗只有两条路：
 
-1. **用 Apple 签发的证书签名**（Xcode 登录 Apple ID 后免费的「Apple Development」证书，
-   或付费 Developer ID）：客户端的代码身份变成 `teamid:<TEAMID>` 且稳定，
-   两道门都不再随构建变化，弹窗彻底消失。需要在 Xcode 里登录一次 Apple ID，
-   之后用 `tool/macos/sign_local.sh <app> "Apple Development: 你的名字 (TEAMID)"` 重签即可。
+1. **用 Apple 签发的证书签名**（免费 Apple ID 即可，不必买 $99/年）：
+   客户端身份变成 `teamid:<TEAMID>` 且稳定，两道门都不再随构建变化，弹窗彻底消失。
+
+   ```text
+   Xcode → Settings → Accounts → + 用 Apple ID 登录（免费账号，会给一个 Personal Team）
+   Xcode → Settings → Accounts → Manage Certificates… → + → Apple Development
+   然后：tool/macos/sign_local.sh build/macos/Build/Products/Release/lzy_totp.app
+   （脚本会自动选中 Apple Development 身份；若仍选到自签名会打印警告）
+   ```
+
+   - **为什么免费账号够**：macOS App 只有在使用需要授权的 entitlement（沙盒、
+     keychain-access-groups、iCloud、推送等）时才需要 provisioning profile。
+     本 App 已关闭沙盒、没有受限 entitlement，因此不需要 profile，
+     也就不会遇到免费账号「iOS 免费 profile 7 天过期」那个限制。
+     Apple Development 证书本身有效期约 1 年，到期重签一次即可。
+   - **付费 $99/年（中国区约 ¥688，以 Apple 官网为准）买的是 Developer ID + 公证**，
+     目的是「分发给别人下载时不被 Gatekeeper 拦」——与本目标（本机不弹钥匙串授权）无关。
 2. **让 App 不再用钥匙串**（把 App 的账号也放进 `~/.config/lzy_totp` 的加密 vault）：
    弹窗消失、AI 侧也自动可见。代价是密钥保护从「钥匙串托管」降级为
    「AES-256-GCM + 旁边一个 600 权限的 `vault.key` 文件」——

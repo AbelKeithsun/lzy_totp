@@ -23,9 +23,25 @@ if [[ -z "$APP" || ! -d "$APP" ]]; then
   exit 2
 fi
 
-IDENTITY="${2:-lzy_totp Local Signing}"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ENTITLEMENTS="$REPO_ROOT/macos/Runner/Release.entitlements"
+
+# 身份选择：显式传入 > Apple 签发（Apple Development / Developer ID）> 本机自签名
+if [[ -n "${2:-}" ]]; then
+  IDENTITY="$2"
+else
+  IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+    | grep -o '"[^"]*"' | tr -d '"' \
+    | grep -E '^(Apple Development|Apple Distribution|Developer ID Application)' \
+    | head -1 || true)"
+  if [[ -n "$IDENTITY" ]]; then
+    echo "自动选中 Apple 签发身份：$IDENTITY"
+  else
+    IDENTITY="lzy_totp Local Signing"
+    echo "未发现 Apple 签发身份，退回本机自签名：$IDENTITY"
+    echo "（提示：自签名无法真正免掉钥匙串弹窗，原因见 README；登录 Xcode 的 Apple ID 后本脚本会自动改用它。）"
+  fi
+fi
 
 if ! security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
   echo "未在钥匙串中找到证书「$IDENTITY」——请先按 README 生成并导入本机签名证书。" >&2
@@ -52,4 +68,20 @@ codesign --force --sign "$IDENTITY" --entitlements "$ENTITLEMENTS" "$APP"
 echo "--- 签名结果"
 codesign -dvv "$APP" 2>&1 | grep -E "Identifier|TeamIdentifier|Signature" || true
 codesign -d --entitlements - "$APP" 2>&1 | grep -A2 "app-sandbox" || true
-codesign --verify --deep --strict "$APP" && echo "✅ 签名校验通过（自签名未被系统信任，Gatekeeper 行为与 ad-hoc 时一致）"
+codesign --verify --deep --strict "$APP" || true
+
+TEAM="$(codesign -dvv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)"
+if [[ -z "$TEAM" || "$TEAM" == "not set" ]]; then
+  cat <<'WARN'
+
+⚠️  该身份未携带 TeamIdentifier（说明不是 Apple 签发的证书）。
+    钥匙串的第二道门（分区列表 / XARA）此时仍按 cdhash 判定，
+    所以重新构建后**还会弹一次**钥匙串授权——自签名解决不了这个问题。
+
+    要彻底免掉弹窗：Xcode → Settings → Accounts 用 Apple ID 登录（免费账号即可，
+    会给一个 Personal Team），再 Manage Certificates → + → Apple Development，
+    然后重新运行本脚本（会自动选中 Apple Development 身份）。
+WARN
+else
+  echo "✅ 已带 TeamIdentifier=$TEAM：钥匙串分区走 teamid，重建后不会再弹授权。"
+fi
