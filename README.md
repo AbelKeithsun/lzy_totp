@@ -18,6 +18,9 @@ Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authentica
 - **删除账户**：每条账户都有明确的删除入口——行尾 `⋮` 菜单（桌面端不用左滑）、长按弹操作面板、
   以及原有左滑；删除前二次确认，删完可点「撤销」恢复
 - **AI 接入说明**：App 内「AI 接入」页给出三步接入、可复制的 MCP 配置 JSON 与 CLI 命令、工具清单与安全提示
+- **一键同步给 AI**（macOS）：账号行尾的云图标点一下，就把 App 里已录入的账号写进
+  `~/.config/lzy_totp`，AI agent / MCP 立刻可取码；再点一下撤回，不用重录密钥。
+  图标状态即权限状态（可读 / 未同步 / 已被 `lzy-totp deny` 禁止）
 
 ## 平台支持
 
@@ -57,6 +60,7 @@ lib/                              # Flutter App（Android + macOS）
   models/account.dart             # → 转发到 totp_core 的账户模型
   services/totp_service.dart      # → 转发到 totp_core 的 TOTP 计算
   services/storage_service.dart   # 加密本地存储（按平台选择 Keychain 策略）
+  services/ai_vault_service.dart  # App 账号 → AI vault 的桥（一键同步 / 撤回 + 审计）
   utils/platform_utils.dart       # 平台能力判断
   pages/account_list_page.dart    # 首页列表（复制 / 删除 / 撤销）
   pages/ai_access_page.dart       # AI 接入说明页（可复制 MCP 配置与 CLI 命令）
@@ -80,6 +84,7 @@ test/totp_test.dart               # RFC 6238 向量 + URI 解析 + 序列化测�
 test/widget_test.dart             # 启动冒烟测试
 test/account_list_test.dart       # 账户删除（菜单 / 长按 / 左滑 + 确认 + 撤销）
 test/ai_access_page_test.dart     # AI 接入页内容与复制
+test/ai_vault_service_test.dart   # App→vault 同步：加密落盘、权限、不覆盖 deny、审计
 ```
 
 ## 让 AI agent 接入 lzy_totp
@@ -122,9 +127,12 @@ DSH 用 `@deepseek-ai/dsh-mcp-client`（工具名形如 `mcp__lzy_totp__generate
 完整配置见 [docs/ai-access.md](docs/ai-access.md)，App 首页右上角的机器人图标也内置了同样内容的
 「AI 接入」说明页（配置与命令可一键复制，见[界面](#界面)最后一张截图）。
 
+已经装了 App 的话，不必用 CLI 重录：macOS 首页每个账号行尾有云图标，**点一下就同步进 vault**
+（再点一下撤回，可撤销；不会覆盖已经被 `deny` 的账号）。
+
 核心安全设计：**只返回一次性验证码，永不返回密钥**；默认放行、可用 `deny` 把个别账号（银行、主邮箱等）
 排除在 AI 之外；每次取码（含被拒绝的）都写审计日志。App 的账号存在系统钥匙串，
-与 AI 读取的 vault 相互独立——想给 AI 用的账号需要用 CLI 录入一次。
+与 AI 读取的 vault 相互独立，同步是显式的一步操作。
 
 ## 构建
 
@@ -243,3 +251,13 @@ xattr -dr com.apple.quarantine /Applications/lzy_totp.app
 
 或右键点击 App 选择「打开」。要做正式分发需申请 Apple Developer 账号并配置
 Developer ID 证书 + 公证流程。
+
+**App Sandbox 已关闭**（`macos/Runner/*.entitlements` 里 `com.apple.security.app-sandbox = false`）。
+原因：App 需要读写与 CLI / MCP 共享的 AI vault（`~/.config/lzy_totp`）——
+沙盒下进程的 HOME 会被重定向到自己的 container，既看不到真实用户目录，
+也没有对应 entitlement 能放行该路径，「一键同步给 AI」就无法工作。
+本 App 通过 GitHub Releases / 本地构建分发、不上架 Mac App Store，因此不受沙盒要求约束。
+若你不需要 App 内的同步功能，把该键改回 `true` 重新构建即可（CLI 侧不受影响）。
+
+关闭沙盒后首次启动，系统可能弹出钥匙串访问询问（重建后 ad-hoc 签名会变），
+选「始终允许」即可。

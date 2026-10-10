@@ -39,8 +39,8 @@ lzy_totp 除了给人用的 App，还对外暴露一个**给 AI agent 调用的�
                                                    └────────────────────────┘
 ```
 
-App（Android / macOS）的账号存在系统钥匙串，与这个 vault **互不影响**：
-想给 AI 用的账号，需要用 CLI 录入一次。
+App（Android / macOS）的账号存在系统钥匙串，与这个 vault **互不影响**。
+往 vault 里放账号有两条路：**App 首页点一下云图标同步**（见下一节），或用 CLI `add` 录入一次。
 
 ## 快速开始（5 步）
 
@@ -54,6 +54,7 @@ lzy-totp doctor
 
 # 3. 录入一个给 AI 用的账号
 lzy-totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub
+#    已经装过 App？不用重录：App 首页每行的云图标点一下即可同步进 vault（见下一节）
 
 # 4. 取码自测（agent 走的也是这条）
 lzy-totp code github --json
@@ -62,6 +63,24 @@ lzy-totp code github --json
 # 5. 接到 MCP 客户端（见下一节），然后对 agent 说：
 #    「用 lzy_totp 取一下 GitHub 的验证码」
 ```
+
+## 从 App 一键同步账号（推荐给已装 App 的人）
+
+App 里的账号存在系统钥匙串，AI 侧只读 vault。两者原本各存各的，现在 App 提供了一个桥：
+
+| 每行的云图标 | 含义 | 点一下会发生什么 |
+|---|---|---|
+| ☁︎ 空心上传 | 不在 vault 里，AI 看不到 | 把该账号写进 `~/.config/lzy_totp`，AI 立即可取码（可「撤销」） |
+| ☁︎✓ 实心（主题色） | 已在 vault 且允许取码 | 从 vault 撤回（App 内仍保留，AI 立刻取不到码） |
+| ☁︎✗ 禁用态 | 已在 vault，但被 `lzy-totp deny` 禁止 | 只提示原因，不动数据；要放开得执行 `lzy-totp allow` |
+
+要点：
+
+- **不需要重新输入密钥**，App 侧的账号直接加密写入 vault；
+- **不会覆盖 deny**：被 CLI 禁止的账号，重复同步也不会把 `aiAllowed` 改回 true；
+- 每次同步 / 撤回都会写审计（`actor=app`、`note=source=app`），可用 `lzy-totp audit` 复查；
+- 撤回是单向的：只是从 vault 移除，App 里的账号不受影响；再点一下即可恢复同步；
+- 目前只在 **macOS 桌面端**提供该入口（Android 上 vault 位于应用沙盒内，外部 agent 读不到）。
 
 ## 接入方式一：MCP server（推荐）
 
@@ -190,6 +209,9 @@ lzy-totp code github --json   # 结构化输出，带剩余秒数
 | `vault.key` | AES-256-GCM 密钥（32 字节 base64） | `600` |
 | `audit.jsonl` | 审计日志（JSONL，只追加） | `600` |
 
+这个目录由 **CLI / MCP 与 App 共用**：App 的「同步给 AI」写的就是这里的 `vault.json`，
+写入用「临时文件 + rename」原子替换，因此 App 与 agent 同时读写也不会写坏文件。
+
 > ⚠️ `vault.key` 与 `vault.json` 必须一起备份。密钥丢失后 vault 无法解密。
 
 ## 访问策略：默认放行 + 黑名单
@@ -242,6 +264,9 @@ $ lzy-totp code bank
 - **提示注入是主要风险**：agent 的上下文里若混入恶意内容（网页、issue、邮件），可能诱导它去取某个账号的码。
   强烈建议把银行、主邮箱、云账号根凭据这类账号 **`lzy-totp deny` 掉**，或干脆不要放进 vault。
 - 用 `lzy-totp list` 定期确认哪些账号处于放行状态。
+- **App 里的云图标是「授权开关」**：点一下账号就进了 vault，等于把它的第二因子交给 AI。
+  好在它是可撤销的（同一位置再点一下即撤回），且不会覆盖已经 `deny` 的账号；
+  但仍建议同步前想清楚哪些账号不该进 vault。
 - **不要开网络接口**。当前实现是纯 stdio / 本地进程，没有监听端口；如确需 HTTP 形态，
   必须限定 `127.0.0.1` 并自行加认证，且走 VPN/mTLS。
 - **审计日志只追加不删除**，定期 `lzy-totp audit` 复查异常取码（尤其 `result=denied` 的密集出现，
@@ -254,7 +279,9 @@ $ lzy-totp code bank
 | 客户端里看不到工具 | 先确认 `~/.local/bin/lzy-totp` 存在且可执行；多数客户端只认**绝对路径**，把配置里的路径写全 |
 | `command not found` | 客户端启动的子进程不继承你的 shell PATH；改用绝对路径，或 `dart pub global activate --source path tools/totp_cli` 后用 `~/.pub-cache/bin/lzy_totp` |
 | agent 说取码被拒绝 | 该账号被 `deny` 了：`lzy-totp list` 看 `ai_allowed`，需要就 `lzy-totp allow <名称>` |
-| 提示「未找到账户」 | 账号在 App 里但不在 vault 里——App 用的是系统钥匙串，需要用 CLI 重新录入 |
+| 提示「未找到账户」 | 账号在 App 里但不在 vault 里——回 App 首页点该行的云图标同步，或用 `lzy-totp add` 录入 |
+| App 里点了云图标却没反应 / 报错 | 界面会给出具体原因（如 `vault.key` 丢失、目录不可写）；`lzy-totp doctor` 可复查 |
+| 云图标是禁用态 | 该账号已被 `lzy-totp deny`：`lzy-totp allow <名称>` 解除，或点提示里的「从 vault 移除」 |
 | `vault.json` 读不了 / 解密失败 | `vault.key` 丢了或权限不对：确认两文件同在 `~/.config/lzy_totp` 且为 `600`，`lzy-totp doctor` 会自检 |
 | 接入了但机器上原来有服务 | MCP server 由客户端按需拉起，退出客户端即结束进程；不存在常驻端口 |
 | 想换数据目录 | 设 `LZY_TOTP_HOME`（客户端配置里的 `env`） |
@@ -266,6 +293,8 @@ $ lzy-totp code bank
 
 macOS / Android App 首页右上角的机器人图标（空列表时是「AI 接入说明」按钮）打开**AI 接入**页，
 里面有三步接入说明、可直接复制的 MCP 配置 JSON 与 CLI 命令、7 个工具清单和安全提示。
+
+macOS 首页每个账号行尾还有云图标（见「从 App 一键同步账号」），长按或 ⋮ 菜单里也有同样一项。
 
 ![AI 接入说明页](images/app-ai-access.png)
 

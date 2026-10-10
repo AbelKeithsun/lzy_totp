@@ -67,7 +67,8 @@ lzy-totp audit --tail 20''';
           _StepCard(
             index: 2,
             title: '录入账号',
-            subtitle: '账号存进独立加密 vault；默认即允许 AI 取码，敏感账号加 --block-ai。',
+            subtitle: '账号存进独立加密 vault；默认即允许 AI 取码，敏感账号加 --block-ai。\n'
+                '（App 里已录入的账号也可以直接在首页点云图标同步过来，不用重录密钥）',
             code: cliSnippet,
             onCopy: (code) => _copy(context, code, 'CLI 命令已复制'),
           ),
@@ -134,6 +135,11 @@ class _Intro extends StatelessWidget {
         _Bullet(
           title: '命令行 CLI',
           body: 'lzy-totp code github --json —— 任何能执行 shell 的 agent 都能用。',
+        ),
+        _Bullet(
+          title: 'App 内一键同步',
+          body: '首页每行的云图标点一下，就把 App 里已录入的账号写进 vault'
+              '（再点一下取消）。不必重新录一遍密钥。',
         ),
         const SizedBox(height: 12),
         Text(
@@ -415,8 +421,10 @@ class _DocFooter extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Text(
-          '注意：App 里的账号存在系统钥匙串，AI 读取的是独立 vault，'
-          '两者互不影响——想给 AI 用的账号需要用 CLI 录入一次。',
+          '注意：App 里的账号存在系统钥匙串，AI 读取的是独立 vault，两者互不影响。'
+          '想让 AI 用某个账号，有两条路：在首页点该行的云图标同步过来，'
+          '或用上面的 lzy-totp add 录入。'
+          '被 lzy-totp deny 的账号即使在 vault 里，AI 也取不到码（云图标会显示为禁用态）。',
           style: theme.textTheme.bodySmall
               ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
         ),

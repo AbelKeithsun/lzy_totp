@@ -19,6 +19,7 @@ void main() {
     expect(find.text('AI 接入'), findsOneWidget);
     expect(find.textContaining('让 AI agent 帮你取验证码'), findsOneWidget);
     expect(find.textContaining('MCP server（推荐）', findRichText: true), findsOneWidget);
+    expect(find.textContaining('App 内一键同步', findRichText: true), findsOneWidget);
     expect(find.textContaining('命令行 CLI', findRichText: true), findsOneWidget);
 
     // 三步接入

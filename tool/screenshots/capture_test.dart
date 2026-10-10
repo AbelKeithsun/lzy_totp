@@ -17,6 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:lzy_totp/pages/account_list_page.dart';
 import 'package:lzy_totp/pages/ai_access_page.dart';
 
+import '../../test/support/fake_ai_vault.dart';
 import '../../test/support/fake_storage.dart';
 
 /// 测试环境的默认字体是 Ahem（方框），换上真实字体截图才看得清：
@@ -105,7 +106,16 @@ void main() {
       testAccount('3', 'AWS', 'root@company.com',
           secret: 'KRSXG5CTMVRXEZLU'),
     ]);
-    await tester.pumpWidget(_frame(AccountListPage(storage: storage)));
+    // 三种 AI 同步状态各展示一个：已放行 / 已同步但被 deny / 未同步
+    final aiVault = FakeAiVaultService([
+      testAccount('1', 'GitHub', 'me@github.com',
+          secret: 'JBSWY3DPEHPK3PXP'),
+      testAccount('2', 'Google', 'me@gmail.com',
+              secret: 'GEZDGNBVGY3TQOJQ')
+          .copyWith(aiAllowed: false),
+    ]);
+    await tester.pumpWidget(
+        _frame(AccountListPage(storage: storage, aiVault: aiVault)));
     await tester.pumpAndSettle();
 
     await _shoot(tester, 'app-account-list.png');
@@ -125,7 +135,16 @@ void main() {
       testAccount('3', 'AWS', 'root@company.com',
           secret: 'KRSXG5CTMVRXEZLU'),
     ]);
-    await tester.pumpWidget(_frame(AccountListPage(storage: storage)));
+    // 三种 AI 同步状态各展示一个：已放行 / 已同步但被 deny / 未同步
+    final aiVault = FakeAiVaultService([
+      testAccount('1', 'GitHub', 'me@github.com',
+          secret: 'JBSWY3DPEHPK3PXP'),
+      testAccount('2', 'Google', 'me@gmail.com',
+              secret: 'GEZDGNBVGY3TQOJQ')
+          .copyWith(aiAllowed: false),
+    ]);
+    await tester.pumpWidget(
+        _frame(AccountListPage(storage: storage, aiVault: aiVault)));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.more_vert).first);
@@ -146,7 +165,8 @@ void main() {
       testAccount('2', 'Google', 'me@gmail.com',
           secret: 'GEZDGNBVGY3TQOJQ'),
     ]);
-    await tester.pumpWidget(_frame(AccountListPage(storage: storage)));
+    await tester.pumpWidget(
+        _frame(AccountListPage(storage: storage, aiVault: FakeAiVaultService())));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.more_vert).first);

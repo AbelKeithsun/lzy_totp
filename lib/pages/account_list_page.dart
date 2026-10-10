@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/account.dart';
+import '../services/ai_vault_service.dart';
 import '../services/storage_service.dart';
 import '../services/totp_service.dart';
 import '../utils/platform_utils.dart';
@@ -13,9 +14,12 @@ import 'scan_page.dart';
 
 /// 首页：账户列表 + 实时刷新的验证码
 class AccountListPage extends StatefulWidget {
-  const AccountListPage({super.key, required this.storage});
+  const AccountListPage({super.key, required this.storage, this.aiVault});
 
   final StorageService storage;
+
+  /// AI vault 桥（默认连 ~/.config/lzy_totp）；测试可注入替身
+  final AiVaultService? aiVault;
 
   @override
   State<AccountListPage> createState() => _AccountListPageState();
@@ -24,6 +28,16 @@ class AccountListPage extends StatefulWidget {
 class _AccountListPageState extends State<AccountListPage> {
   List<TotpAccount> _accounts = [];
   Timer? _timer;
+
+  /// vault 里的账号快照，用来显示每行的「同步给 AI」状态
+  List<TotpAccount> _vaultAccounts = [];
+
+  late final AiVaultService _aiVault =
+      widget.aiVault ?? AiVaultService();
+
+  /// 是否启用 App→vault 同步：只在桌面端（AI agent 跑在同一台机器上）有意义，
+  /// Android 上 ~/.config/lzy_totp 位于沙盒内，外部 agent 读不到。
+  bool get _aiSyncEnabled => AppPlatform.isDesktop;
 
   @override
   void initState() {
@@ -43,7 +57,32 @@ class _AccountListPageState extends State<AccountListPage> {
 
   Future<void> _load() async {
     final accounts = await widget.storage.load();
-    if (mounted) setState(() => _accounts = accounts);
+    var vaultAccounts = <TotpAccount>[];
+    if (_aiSyncEnabled) {
+      try {
+        vaultAccounts = await _aiVault.load();
+      } catch (_) {
+        // vault 不可读（密钥丢失、权限等）时不阻塞列表，同步时会提示具体错误
+        vaultAccounts = [];
+      }
+    }
+    if (mounted) {
+      setState(() {
+        _accounts = accounts;
+        _vaultAccounts = vaultAccounts;
+      });
+    }
+  }
+
+  /// 重新读取 vault 快照（同步 / 取消同步后刷新每行状态）
+  Future<void> _reloadVault() async {
+    if (!_aiSyncEnabled) return;
+    try {
+      final latest = await _aiVault.load();
+      if (mounted) setState(() => _vaultAccounts = latest);
+    } catch (_) {
+      if (mounted) setState(() => _vaultAccounts = []);
+    }
   }
 
   Future<void> _persist() => widget.storage.save(_accounts);
@@ -138,6 +177,94 @@ class _AccountListPageState extends State<AccountListPage> {
     await _persist();
   }
 
+  /// 点一下：把 App 里已录入的账号写进 AI vault（或按状态给出说明）
+  Future<void> _toggleAiSync(TotpAccount account) async {
+    final state = _aiVault.stateOf(account, _vaultAccounts);
+    switch (state) {
+      case VaultSyncState.notSynced:
+        await _syncToVault(account);
+      case VaultSyncState.syncedAllowed:
+        await _unlinkFromVault(account);
+      case VaultSyncState.syncedBlocked:
+        _showDeniedHint(account);
+    }
+  }
+
+  Future<void> _syncToVault(TotpAccount account) async {
+    try {
+      final created = await _aiVault.sync(account);
+      await _reloadVault();
+      if (!mounted) return;
+      _snack(
+        created
+            ? '已同步给 AI：${account.displayTitle}，AI 现在可以取码'
+            : '已更新 vault 里的 ${account.displayTitle}',
+        // 只有新建才能撤销；覆盖已有条目的事后撤回会丢掉原有信息
+        undo: created ? () => _unlinkFromVault(account) : null,
+      );
+    } catch (e) {
+      _snackError('同步失败：${_describe(e)}');
+    }
+  }
+
+  Future<void> _unlinkFromVault(TotpAccount account) async {
+    try {
+      final removed = await _aiVault.unlink(account);
+      await _reloadVault();
+      if (!mounted) return;
+      _snack(
+        removed
+            ? '已取消 AI 读取：${account.displayTitle}（App 内仍保留）'
+            : 'vault 里没有这个账号',
+        undo: removed ? () => _syncToVault(account) : null,
+      );
+    } catch (e) {
+      _snackError('取消同步失败：${_describe(e)}');
+    }
+  }
+
+  /// 已在 vault 但被 CLI 的 deny 挡住：说明原因，并提供「从 vault 移除」
+  void _showDeniedHint(TotpAccount account) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text('「${account.displayTitle}」已被 lzy-totp deny 禁止 AI 取码；'
+            '如需放开请执行 lzy-totp allow'),
+        duration: const Duration(seconds: 6),
+        action: SnackBarAction(
+          label: '从 vault 移除',
+          onPressed: () => _unlinkFromVault(account),
+        ),
+      ));
+  }
+
+  String _describe(Object e) {
+    final text = e.toString();
+    return text.startsWith('VaultError: ') ? text.substring(12) : text;
+  }
+
+  void _snack(String message, {VoidCallback? undo}) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 4),
+        action: undo == null
+            ? null
+            : SnackBarAction(label: '撤销', onPressed: undo),
+      ));
+  }
+
+  void _snackError(String message) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 6),
+        backgroundColor: Theme.of(context).colorScheme.errorContainer,
+      ));
+  }
+
   void _openAiAccess() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const AiAccessPage()),
@@ -201,6 +328,10 @@ class _AccountListPageState extends State<AccountListPage> {
                   // 左滑：先确认，再落库删除
                   onConfirmDelete: () => _confirmDelete(account),
                   onDelete: () => _removeAccount(account),
+                  aiState: _aiSyncEnabled
+                      ? _aiVault.stateOf(account, _vaultAccounts)
+                      : null,
+                  onAiTap: () => _toggleAiSync(account),
                 );
               },
             ),
@@ -214,7 +345,7 @@ class _AccountListPageState extends State<AccountListPage> {
 }
 
 /// 列表项菜单里的操作
-enum _RowAction { copy, delete }
+enum _RowAction { copy, aiSync, delete }
 
 class _AccountTile extends StatelessWidget {
   const _AccountTile({
@@ -223,6 +354,8 @@ class _AccountTile extends StatelessWidget {
     required this.onCopy,
     required this.onConfirmDelete,
     required this.onDelete,
+    required this.onAiTap,
+    this.aiState,
   });
 
   final TotpAccount account;
@@ -234,6 +367,37 @@ class _AccountTile extends StatelessWidget {
   /// 已确认后真正删除
   final VoidCallback onDelete;
 
+  /// 点一下同步给 AI / 取消同步（null 表示当前平台不提供该功能）
+  final VoidCallback onAiTap;
+
+  /// 该账号在 AI vault 里的状态；null = 当前平台不启用同步
+  final VaultSyncState? aiState;
+
+  bool get _aiEnabled => aiState != null;
+
+  /// 同步按钮的图标与提示语
+  IconData get _aiIcon => switch (aiState) {
+        VaultSyncState.syncedAllowed => Icons.cloud_done,
+        VaultSyncState.syncedBlocked => Icons.cloud_off,
+        _ => Icons.cloud_upload_outlined,
+      };
+
+  String get _aiTooltip => switch (aiState) {
+        VaultSyncState.syncedAllowed => 'AI 可读取验证码，点按取消同步',
+        VaultSyncState.syncedBlocked => '已同步，但被 lzy-totp deny 禁止取码',
+        _ => '同步给 AI（写入 ~/.config/lzy_totp）',
+      };
+
+  String get _aiMenuLabel => switch (aiState) {
+        VaultSyncState.notSynced => '同步给 AI',
+        _ => '取消 AI 读取',
+      };
+
+  IconData get _aiMenuIcon => switch (aiState) {
+        VaultSyncState.notSynced => Icons.cloud_upload_outlined,
+        _ => Icons.cloud_off,
+      };
+
   Future<void> _requestDelete() async {
     if (await onConfirmDelete()) onDelete();
   }
@@ -242,6 +406,8 @@ class _AccountTile extends StatelessWidget {
     switch (action) {
       case _RowAction.copy:
         onCopy(code);
+      case _RowAction.aiSync:
+        onAiTap();
       case _RowAction.delete:
         _requestDelete();
     }
@@ -261,6 +427,12 @@ class _AccountTile extends StatelessWidget {
               title: const Text('复制验证码'),
               onTap: () => Navigator.pop(ctx, _RowAction.copy),
             ),
+            if (_aiEnabled)
+              ListTile(
+                leading: Icon(_aiMenuIcon),
+                title: Text(_aiMenuLabel),
+                onTap: () => Navigator.pop(ctx, _RowAction.aiSync),
+              ),
             ListTile(
               leading: const Icon(Icons.delete_outline),
               title: const Text('删除账户'),
@@ -315,6 +487,20 @@ class _AccountTile extends StatelessWidget {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // 点一下就同步给 AI（桌面端；状态用图标区分）
+            if (_aiEnabled)
+              IconButton(
+                icon: Icon(
+                  _aiIcon,
+                  size: 18,
+                  color: aiState == VaultSyncState.syncedAllowed
+                      ? theme.colorScheme.primary
+                      : null,
+                ),
+                tooltip: _aiTooltip,
+                visualDensity: VisualDensity.compact,
+                onPressed: onAiTap,
+              ),
             // 桌面端提供显式复制按钮（移动端点击整行即可复制）
             if (AppPlatform.isDesktop)
               IconButton(
@@ -343,8 +529,8 @@ class _AccountTile extends StatelessWidget {
               tooltip: '更多操作',
               icon: const Icon(Icons.more_vert, size: 20),
               onSelected: (action) => _handleAction(action, code),
-              itemBuilder: (_) => const [
-                PopupMenuItem(
+              itemBuilder: (_) => [
+                const PopupMenuItem(
                   value: _RowAction.copy,
                   child: Row(
                     children: [
@@ -354,7 +540,18 @@ class _AccountTile extends StatelessWidget {
                     ],
                   ),
                 ),
-                PopupMenuItem(
+                if (_aiEnabled)
+                  PopupMenuItem(
+                    value: _RowAction.aiSync,
+                    child: Row(
+                      children: [
+                        Icon(_aiMenuIcon, size: 18),
+                        const SizedBox(width: 12),
+                        Text(_aiMenuLabel),
+                      ],
+                    ),
+                  ),
+                const PopupMenuItem(
                   value: _RowAction.delete,
                   child: Row(
                     children: [

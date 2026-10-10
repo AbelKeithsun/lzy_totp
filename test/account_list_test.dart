@@ -2,14 +2,33 @@ import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lzy_totp/pages/account_list_page.dart';
+import 'package:totp_core/totp_core.dart';
 
+import 'support/fake_ai_vault.dart';
 import 'support/fake_storage.dart';
 
 void main() {
   /// 首页带每秒刷新的 Timer，测试结束前必须卸载组件树把它取消掉
-  Future<void> pumpList(WidgetTester tester, FakeStorage storage) async {
-    await tester.pumpWidget(MaterialApp(home: AccountListPage(storage: storage)));
+  Future<void> pumpList(
+    WidgetTester tester,
+    FakeStorage storage, {
+    FakeAiVaultService? aiVault,
+  }) async {
+    await tester.pumpWidget(MaterialApp(
+      home: AccountListPage(storage: storage, aiVault: aiVault),
+    ));
     await tester.pump();
+  }
+
+  /// 以 macOS（桌面端）跑一段测试：App→vault 同步只在桌面端出现。
+  /// debug 变量必须在测试体内复位，框架会在 tearDown 之前校验。
+  Future<void> asMacOs(Future<void> Function() body) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    try {
+      await body();
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   }
 
   Future<void> unmount(WidgetTester tester) =>
@@ -154,11 +173,9 @@ void main() {
   });
 
   testWidgets('桌面端（macOS）：显式复制按钮与 ⋮ 删除入口并存', (tester) async {
-    // 必须在测试体内复位：框架会在 tearDown 之前校验 debug 变量是否被改动
-    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
-    try {
+    await asMacOs(() async {
       final storage = FakeStorage([testAccount('1', 'GitHub', 'me@github.com')]);
-      await pumpList(tester, storage);
+      await pumpList(tester, storage, aiVault: FakeAiVaultService());
 
       expect(find.byIcon(Icons.copy), findsOneWidget);
       expect(find.byIcon(Icons.more_vert), findsOneWidget);
@@ -173,9 +190,142 @@ void main() {
       expect(storage.accounts, isEmpty);
 
       await unmount(tester);
-    } finally {
-      debugDefaultTargetPlatformOverride = null;
-    }
+    });
+  });
+
+  testWidgets('点一下同步图标：账号写入 AI vault 并提示', (tester) async {
+    await asMacOs(() async {
+      final storage = FakeStorage([testAccount('1', 'GitHub', 'me@github.com')]);
+      final vault = FakeAiVaultService();
+      await pumpList(tester, storage, aiVault: vault);
+
+      expect(vault.accounts, isEmpty);
+      expect(find.byIcon(Icons.cloud_upload_outlined), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.cloud_upload_outlined));
+      await tester.pumpAndSettle();
+
+      expect(vault.accounts.length, 1);
+      expect(vault.accounts.single.displayTitle, 'GitHub (me@github.com)');
+      expect(vault.accounts.single.aiAllowed, isTrue);
+      expect(find.textContaining('已同步给 AI'), findsOneWidget);
+      // 图标变成「AI 可读取」
+      expect(find.byIcon(Icons.cloud_done), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
+  testWidgets('已同步时点一下：从 vault 移除但 App 内保留', (tester) async {
+    await asMacOs(() async {
+      final account = testAccount('1', 'GitHub', 'me@github.com');
+      final storage = FakeStorage([account]);
+      final vault = FakeAiVaultService([account]);
+      await pumpList(tester, storage, aiVault: vault);
+
+      expect(find.byIcon(Icons.cloud_done), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.cloud_done));
+      await tester.pumpAndSettle();
+
+      expect(vault.accounts, isEmpty);
+      expect(find.textContaining('已取消 AI 读取'), findsOneWidget);
+      // App 内的账号还在
+      expect(storage.accounts.length, 1);
+      expect(find.text('GitHub (me@github.com)'), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
+  testWidgets('被 lzy-totp deny 的账号：显示禁止状态，点一下只给说明不改数据', (tester) async {
+    await asMacOs(() async {
+      final account = testAccount('1', 'Bank', 'me@bank.com');
+      final storage = FakeStorage([account]);
+      final vault = FakeAiVaultService([account.copyWith(aiAllowed: false)]);
+      await pumpList(tester, storage, aiVault: vault);
+
+      expect(find.byIcon(Icons.cloud_off), findsOneWidget);
+      expect(find.byIcon(Icons.cloud_done), findsNothing);
+
+      await tester.tap(find.byIcon(Icons.cloud_off));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('已被 lzy-totp deny 禁止'), findsOneWidget);
+      expect(vault.unlinkCount, 0);
+      expect(vault.accounts.length, 1);
+
+      await unmount(tester);
+    });
+  });
+
+  testWidgets('同步后可撤销（撤销即从 vault 撤回）', (tester) async {
+    await asMacOs(() async {
+      final storage = FakeStorage([testAccount('1', 'GitHub', 'me@github.com')]);
+      final vault = FakeAiVaultService();
+      await pumpList(tester, storage, aiVault: vault);
+
+      await tester.tap(find.byIcon(Icons.cloud_upload_outlined));
+      await tester.pumpAndSettle();
+      expect(vault.accounts.length, 1);
+
+      await tester.tap(find.text('撤销'));
+      await tester.pumpAndSettle();
+
+      expect(vault.accounts, isEmpty);
+      expect(find.byIcon(Icons.cloud_upload_outlined), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
+  testWidgets('⋮ 菜单里也有同步给 AI', (tester) async {
+    await asMacOs(() async {
+      final storage = FakeStorage([testAccount('1', 'GitHub', 'me@github.com')]);
+      final vault = FakeAiVaultService();
+      await pumpList(tester, storage, aiVault: vault);
+
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('同步给 AI'));
+      await tester.pumpAndSettle();
+
+      expect(vault.accounts.length, 1);
+
+      await unmount(tester);
+    });
+  });
+
+  testWidgets('vault 写入失败时给出错误提示而不是崩溃', (tester) async {
+    await asMacOs(() async {
+      final storage = FakeStorage([testAccount('1', 'GitHub', 'me@github.com')]);
+      final vault = FakeAiVaultService()
+        ..failWith = VaultError('密钥文件缺失：vault.key');
+      await pumpList(tester, storage, aiVault: vault);
+
+      await tester.tap(find.byIcon(Icons.cloud_upload_outlined));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('同步失败'), findsOneWidget);
+      expect(find.textContaining('密钥文件缺失'), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
+  testWidgets('Android 上不出现同步入口（vault 在沙盒内，AI 读不到）', (tester) async {
+    final storage = FakeStorage([testAccount('1', 'GitHub', 'me@github.com')]);
+    await pumpList(tester, storage, aiVault: FakeAiVaultService());
+
+    expect(find.byIcon(Icons.cloud_upload_outlined), findsNothing);
+    expect(find.byIcon(Icons.cloud_done), findsNothing);
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    expect(find.text('同步给 AI'), findsNothing);
+    expect(find.text('复制验证码'), findsOneWidget);
+
+    await unmount(tester);
   });
 
   testWidgets('顶部入口可打开 AI 接入说明页', (tester) async {

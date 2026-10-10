@@ -2,7 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!--
+	  关闭 App Sandbox（Release）。
+	  原因：App 需要读写与 CLI / MCP 共享的 AI vault（~/.config/lzy_totp）。
+	  开启沙盒时进程的 HOME 会被重定向到自己的 container，
+	  既看不到真实用户目录、也没有对应 entitlement 可以放行该路径，
+	  「点一下同步给 AI」就无法工作。
+	  本 App 只通过 GitHub Releases / 本地构建分发，不上架 Mac App Store，
+	  因此不受沙盒要求约束。
+	-->
 	<key>com.apple.security.app-sandbox</key>
-	<true/>
+	<false/>
 </dict>
 </plist>
