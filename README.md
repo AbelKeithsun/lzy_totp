@@ -160,6 +160,9 @@ flutter build apk --release
 # macOS 桌面端
 flutter build macos --release
 
+# 构建 + 签名 + 安装到 /Applications 一条命令（见「关于…弹窗」一节的取舍说明）
+tool/macos/upgrade_local.sh
+
 # 打包 macOS 安装镜像（.dmg，内含 Applications 快捷方式，可拖拽安装）
 mkdir -p /tmp/dmg_stage
 cp -R build/macos/Build/Products/Release/lzy_totp.app /tmp/dmg_stage/
@@ -315,6 +318,21 @@ App 的账号存在系统钥匙串（`flutter_secure_storage_service` / `totp_ac
 
 > CLI / MCP（AI 侧）不碰钥匙串，所以 **AI 取码永远不会触发这个弹窗**：
 > 它只读 `~/.config/lzy_totp/vault.json` 与 `vault.key` 两个普通文件。
+
+#### 本项目的取舍（已定）
+
+**接受「每次升级点一次允许」**，不引入 Apple 证书（本机没有 Apple ID 登录，
+不想为此注册/付费）。因此每次升级后第一次打开点一下即可，其余时间不受影响。
+
+升级用一条命令（构建 → 签名 → 停旧版 → 安装到 /Applications → 启动）：
+
+```bash
+tool/macos/upgrade_local.sh              # 完整流程
+tool/macos/upgrade_local.sh --no-sign    # 不重签，保持 ad-hoc
+tool/macos/upgrade_local.sh --no-build   # 只用现有产物做安装
+```
+
+脚本**不会去改你的钥匙串条目**——授权交给你在弹窗上点一次，避免脚本碰机密数据。
 
 #### 可选：生成本机自签名证书
 
