@@ -8,6 +8,10 @@ Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authentica
 - **扫码添加**：识别 `otpauth://totp/...` 二维码（mobile_scanner + ML Kit，仅 Android/iOS）
 - **手动添加**：输入 Base32 密钥，支持位数（6/8）、周期（30/60s）、算法（SHA1/SHA256/SHA512）
   （桌面端自动聚焦密钥框，打开即 Cmd+V 粘贴）
+- **账户名必填 + 备注**：账户名带 `*` 标识且做非空校验，首页直接显示，用来区分不同系统 / 环境；
+  另有可选的发行方与备注（如「生产环境 / 测试环境」）；扫码得到的二维码若没带名称，会要求补全后再入库
+- **编辑已有账号**：⋮ 菜单 / 长按 →「编辑账户」，可补账户名、发行方、备注，或修正密钥；
+  保存后保留原 id 与 AI 权限；若该账号已同步给 AI，vault 里的条目也会同步更新
 - **TOTP 计算**：RFC 6238，测试向量全覆盖（SHA1/SHA256/SHA512）
 - **加密存储**：密钥经 flutter_secure_storage 加密落盘
   - Android：AES-GCM + RSA 密钥包裹（密钥由 Android Keystore 保管）
@@ -42,6 +46,7 @@ Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authentica
 </p>
 
 <p>
+  <img src="docs/images/app-edit-account.png" width="270" alt="编辑账户：补账户名 / 发行方 / 备注">
   <img src="docs/images/app-ai-access.png" width="270" alt="AI 接入说明页">
 </p>
 
@@ -83,6 +88,7 @@ tool/screenshots/capture_test.dart # 截图生成器（不在 test/ 下，flutte
 test/totp_test.dart               # RFC 6238 向量 + URI 解析 + 序列化测试
 test/widget_test.dart             # 启动冒烟测试
 test/account_list_test.dart       # 账户删除（菜单 / 长按 / 左滑 + 确认 + 撤销）
+test/add_account_page_test.dart   # 账户名必填、备注、编辑模式（保留 id 与 AI 权限）
 test/ai_access_page_test.dart     # AI 接入页内容与复制
 test/ai_vault_service_test.dart   # App→vault 同步：加密落盘、权限、不覆盖 deny、审计
 ```
@@ -98,7 +104,8 @@ cd tools/totp_cli && dart pub get
 dart compile exe bin/lzy_totp.dart -o ~/.local/bin/lzy-totp
 
 # 2. 录入账号（默认即允许 AI 取码，敏感账号加 --block-ai）
-lzy-totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub
+lzy-totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub \
+  --label me@github.com --note 个人账号
 
 # 3. 取码 / 黑名单 / 审计
 lzy-totp code github --json
@@ -129,6 +136,9 @@ DSH 用 `@deepseek-ai/dsh-mcp-client`（工具名形如 `mcp__lzy_totp__generate
 
 已经装了 App 的话，不必用 CLI 重录：macOS 首页每个账号行尾有云图标，**点一下就同步进 vault**
 （再点一下撤回，可撤销；不会覆盖已经被 `deny` 的账号）。
+
+`list_accounts` / `get_account_info` 会把**发行方、账户名、备注**一起给 AI（但不含密钥），
+所以把账户名与备注填好，agent 才分得清该取哪个环境的码。
 
 核心安全设计：**只返回一次性验证码，永不返回密钥**；默认放行、可用 `deny` 把个别账号（银行、主邮箱等）
 排除在 AI 之外；每次取码（含被拒绝的）都写审计日志。App 的账号存在系统钥匙串，

@@ -129,6 +129,7 @@ ArgParser _buildParser() {
     ..addOption('uri', help: 'otpauth:// URI（与 --secret 二选一）')
     ..addOption('issuer', help: '发行方')
     ..addOption('label', help: '账户名')
+    ..addOption('note', help: '备注（如：生产环境 / 测试环境）')
     ..addOption('digits', allowed: ['6', '8'], defaultsTo: '6')
     ..addOption('period', allowed: ['30', '60'], defaultsTo: '30')
     ..addOption('algorithm',
@@ -158,6 +159,7 @@ lzy_totp —— 一次性验证码（TOTP）命令行 / MCP 入口
   info <名称>          查看账号元数据（绝不返回密钥）
   code <名称>          输出当前验证码
   add <名称>           添加账号（--secret <Base32> 或 --uri <otpauth://...>）
+                       <名称> 即账户名，始终保留；--issuer 发行方、--note 备注
   remove <名称>        删除账号
   allow <名称>         允许 AI 取码（默认即允许）
   deny <名称>          禁止 AI 取码（黑名单）
@@ -166,8 +168,9 @@ lzy_totp —— 一次性验证码（TOTP）命令行 / MCP 入口
   mcp                 启动 MCP stdio server
 
 示例：
-  lzy_totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub
+  lzy_totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub --note 个人账号
   lzy_totp code github --json
+  lzy_totp info github                # 查看发行方 / 账户名 / 备注 / 是否允许 AI
   lzy_totp deny "Bank (me@x.com)"     # 银行类账号排除在 AI 之外
 
 策略：默认放行，新增账号即可被 AI 取码；用 deny 关闭个别账号。
@@ -192,6 +195,7 @@ Future<int> _list(CliContext ctx, ArgResults cmd) async {
                 'period': a.period,
                 'algorithm': a.algorithm,
                 'ai_allowed': a.aiAllowed,
+                'note': a.note,
               })
           .toList(),
     }));
@@ -205,7 +209,9 @@ Future<int> _list(CliContext ctx, ArgResults cmd) async {
   }
   for (final a in accounts) {
     final flag = a.aiAllowed ? 'AI 允许' : 'AI 禁止';
-    ctx.out.writeln('${a.displayTitle}  [$flag]  ${a.digits}位/${a.period}s/${a.algorithm}');
+    final note = a.note.isEmpty ? '' : '  # ${a.note}';
+    ctx.out.writeln(
+        '${a.displayTitle}  [$flag]  ${a.digits}位/${a.period}s/${a.algorithm}$note');
   }
   return ExitCode.ok;
 }
@@ -225,6 +231,9 @@ Future<int> _info(CliContext ctx, ArgResults cmd) async {
   } else {
     ctx.out.writeln('账号：${a.displayTitle}');
     ctx.out.writeln('id：${a.id}');
+    ctx.out.writeln('发行方：${a.issuer.isEmpty ? '（未填）' : a.issuer}');
+    ctx.out.writeln('账户名：${a.label.isEmpty ? '（未填）' : a.label}');
+    ctx.out.writeln('备注：${a.note.isEmpty ? '（无）' : a.note}');
     ctx.out.writeln('参数：${a.digits} 位 / ${a.period} 秒 / ${a.algorithm}');
     ctx.out.writeln('AI 取码：${a.aiAllowed ? '允许（默认）' : '已禁止'}');
   }
@@ -325,6 +334,7 @@ Future<int> _add(CliContext ctx, ArgResults cmd) async {
       period: parsed.period,
       algorithm: parsed.algorithm,
       aiAllowed: allowAi,
+      note: (cmd['note'] as String?) ?? '',
     );
   } else {
     final normalized = secret!.toUpperCase().replaceAll(RegExp(r'\s'), '');
@@ -334,13 +344,15 @@ Future<int> _add(CliContext ctx, ArgResults cmd) async {
     }
     account = TotpAccount(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
-      issuer: (cmd['issuer'] as String?) ?? name,
-      label: (cmd['label'] as String?) ?? '',
+      // 位置参数 <名称> 是「账户名」，始终保留；--issuer 只作为发行方补充
+      issuer: (cmd['issuer'] as String?) ?? '',
+      label: (cmd['label'] as String?) ?? name,
       secret: normalized,
       digits: int.parse(cmd['digits'] as String),
       period: int.parse(cmd['period'] as String),
       algorithm: cmd['algorithm'] as String,
       aiAllowed: allowAi,
+      note: (cmd['note'] as String?) ?? '',
     );
     try {
       TotpService.codeFor(account);
@@ -510,6 +522,7 @@ Map<String, dynamic> _metadata(TotpAccount a) => {
       'period': a.period,
       'algorithm': a.algorithm,
       'ai_allowed': a.aiAllowed,
+      'note': a.note,
     };
 
 String _encode(Object value) => const JsonEncoder.withIndent('  ').convert(value);

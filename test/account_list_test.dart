@@ -328,6 +328,100 @@ void main() {
     await unmount(tester);
   });
 
+  testWidgets('⋮ 菜单可编辑账户：补上账户名后列表与存储都更新', (tester) async {
+    tester.view.physicalSize = const Size(900, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    // 模拟历史遗留：没有账户名的账号
+    final storage = FakeStorage([
+      TotpAccount(id: '1', issuer: '', label: '', secret: 'JBSWY3DPEHPK3PXP'),
+    ]);
+    await pumpList(tester, storage, aiVault: FakeAiVaultService());
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('编辑账户'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('保存修改'), findsOneWidget);
+    await tester.enterText(
+        find.widgetWithText(TextFormField, '账户名 *'), '生产环境 Jenkins');
+    await tester.enterText(
+        find.widgetWithText(TextFormField, '发行方（可选）'), 'Jenkins');
+    await tester.enterText(
+        find.widgetWithText(TextFormField, '备注（可选）'), '生产环境');
+    await tester.tap(find.widgetWithText(FilledButton, '保存修改'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Jenkins (生产环境 Jenkins)'), findsOneWidget);
+    expect(find.text('# 生产环境'), findsOneWidget);
+    expect(storage.accounts.single.label, '生产环境 Jenkins');
+    expect(storage.accounts.single.issuer, 'Jenkins');
+    expect(storage.accounts.single.note, '生产环境');
+
+    await unmount(tester);
+  });
+
+  testWidgets('已同步给 AI 的账号改名后，vault 里的条目同步更新', (tester) async {
+    await asMacOs(() async {
+      tester.view.physicalSize = const Size(900, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final account = testAccount('1', 'GitHub', 'me@github.com');
+      final storage = FakeStorage([account]);
+      final vault = FakeAiVaultService([account]);
+      await pumpList(tester, storage, aiVault: vault);
+
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('编辑账户'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.widgetWithText(TextFormField, '账户名 *'), 'work@github.com');
+      await tester.enterText(
+          find.widgetWithText(TextFormField, '备注（可选）'), '工作账号');
+      await tester.tap(find.widgetWithText(FilledButton, '保存修改'));
+      await tester.pumpAndSettle();
+
+      expect(vault.accounts.single.label, 'work@github.com');
+      expect(vault.accounts.single.note, '工作账号');
+      expect(find.textContaining('更新了 vault'), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
+  testWidgets('编辑已被 deny 的已同步账号，不会把它改回可读', (tester) async {
+    await asMacOs(() async {
+      tester.view.physicalSize = const Size(900, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final account = testAccount('1', 'Bank', 'me@bank.com');
+      final storage = FakeStorage([account]);
+      final vault = FakeAiVaultService([account.copyWith(aiAllowed: false)]);
+      await pumpList(tester, storage, aiVault: vault);
+
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('编辑账户'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.widgetWithText(TextFormField, '备注（可选）'), '银行卡');
+      await tester.tap(find.widgetWithText(FilledButton, '保存修改'));
+      await tester.pumpAndSettle();
+
+      expect(vault.accounts.single.aiAllowed, isFalse);
+      expect(vault.accounts.single.note, '银行卡');
+      // 行内图标仍是「已被 deny」状态
+      expect(find.byIcon(Icons.cloud_off), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
   testWidgets('顶部入口可打开 AI 接入说明页', (tester) async {
     final storage = FakeStorage();
     await pumpList(tester, storage);

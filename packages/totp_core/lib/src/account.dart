@@ -11,6 +11,7 @@ class TotpAccount {
     this.period = 30,
     this.algorithm = 'SHA1',
     this.aiAllowed = defaultAiAllowed,
+    this.note = '',
   });
 
   /// 新增账号时是否默认允许 AI 取码。
@@ -39,6 +40,12 @@ class TotpAccount {
   /// SHA1 / SHA256 / SHA512
   String algorithm;
 
+  /// 备注：给这个账号补充说明（如「生产环境 / 测试环境」「公司邮箱」）。
+  ///
+  /// 不是密钥，不参与取码，只用于区分同名或相似的账号；
+  /// 会随 CLI / MCP 的元数据一起返回给 AI，便于它判断该用哪个账号。
+  String note;
+
   /// 是否允许 AI / 自动化工具查询该账户的验证码。
   ///
   /// **默认 true（默认放行）**：新增账号即可被 AI 取码；
@@ -54,6 +61,7 @@ class TotpAccount {
         'period': period,
         'algorithm': algorithm,
         'aiAllowed': aiAllowed,
+        'note': note,
       };
 
   factory TotpAccount.fromJson(Map<String, dynamic> json) => TotpAccount(
@@ -65,6 +73,7 @@ class TotpAccount {
         period: json['period'] as int? ?? 30,
         algorithm: json['algorithm'] as String? ?? 'SHA1',
         aiAllowed: json['aiAllowed'] as bool? ?? defaultAiAllowed,
+        note: json['note'] as String? ?? '',
       );
 
   static String encodeList(List<TotpAccount> accounts) =>
@@ -135,14 +144,26 @@ class TotpAccount {
         displayTitle.toLowerCase() == q;
   }
 
-  TotpAccount copyWith({bool? aiAllowed}) => TotpAccount(
-        id: id,
-        issuer: issuer,
-        label: label,
-        secret: secret,
-        digits: digits,
-        period: period,
-        algorithm: algorithm,
+  TotpAccount copyWith({
+    String? id,
+    String? issuer,
+    String? label,
+    String? secret,
+    int? digits,
+    int? period,
+    String? algorithm,
+    bool? aiAllowed,
+    String? note,
+  }) =>
+      TotpAccount(
+        id: id ?? this.id,
+        issuer: issuer ?? this.issuer,
+        label: label ?? this.label,
+        secret: secret ?? this.secret,
+        digits: digits ?? this.digits,
+        period: period ?? this.period,
+        algorithm: algorithm ?? this.algorithm,
         aiAllowed: aiAllowed ?? this.aiAllowed,
+        note: note ?? this.note,
       );
 }

@@ -142,4 +142,48 @@ void main() {
       expect(tail.map((e) => e.action), ['a3', 'a4']);
     });
   });
+  _noteFieldTests();
+}
+
+void _noteFieldTests() {
+  group('账户备注（note）', () {
+    test('JSON 往返保留备注，旧数据没有该字段时回退为空串', () {
+      final account = TotpAccount(
+        id: '1',
+        issuer: 'Jenkins',
+        label: '生产环境',
+        secret: 'JBSWY3DPEHPK3PXP',
+        note: '生产环境 / 需要审批后才取码',
+      );
+      final restored =
+          TotpAccount.decodeList(TotpAccount.encodeList([account])).single;
+      expect(restored.note, '生产环境 / 需要审批后才取码');
+      expect(restored.displayTitle, 'Jenkins (生产环境)');
+
+      // 兼容历史数据（没有 note 字段）
+      final legacy = TotpAccount.fromJson({
+        'id': '2',
+        'issuer': 'GitHub',
+        'label': 'me@github.com',
+        'secret': 'JBSWY3DPEHPK3PXP',
+      });
+      expect(legacy.note, '');
+    });
+
+    test('copyWith 能改任意字段且保留其余字段', () {
+      final account = TotpAccount(
+        id: '1',
+        issuer: 'GitHub',
+        label: 'me@github.com',
+        secret: 'JBSWY3DPEHPK3PXP',
+        note: 'x',
+      );
+      final renamed = account.copyWith(label: 'work@github.com', note: '工作');
+      expect(renamed.id, '1');
+      expect(renamed.issuer, 'GitHub');
+      expect(renamed.secret, 'JBSWY3DPEHPK3PXP');
+      expect(renamed.label, 'work@github.com');
+      expect(renamed.note, '工作');
+    });
+  });
 }

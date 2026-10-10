@@ -94,6 +94,36 @@ class AiVaultService {
     return created;
   }
 
+  /// 账号被编辑后同步 vault 里的条目：保留 id 与 aiAllowed，更新名称/发行方/备注/参数；
+  /// 若密钥改了，等同「同一个账号换密钥」，不会在 vault 里留下旧条目。
+  ///
+  /// 返回 true 表示 vault 里确实有这条记录并已更新。
+  Future<bool> replace(TotpAccount previous, TotpAccount updated) async {
+    var found = false;
+    await vault.update((accounts) async {
+      final index = _indexOf(accounts, previous);
+      if (index < 0) return null;
+      found = true;
+      final existing = accounts[index];
+      accounts[index] = TotpAccount(
+        id: existing.id,
+        issuer: updated.issuer,
+        label: updated.label,
+        secret: updated.secret,
+        digits: updated.digits,
+        period: updated.period,
+        algorithm: updated.algorithm,
+        aiAllowed: existing.aiAllowed,
+        note: updated.note,
+      );
+      return null;
+    });
+    if (found) {
+      await _audit('update_account', updated, note: 'source=app');
+    }
+    return found;
+  }
+
   /// 从 vault 移除（App 内仍保留该账号）。
   Future<bool> unlink(TotpAccount account) async {
     var removed = false;

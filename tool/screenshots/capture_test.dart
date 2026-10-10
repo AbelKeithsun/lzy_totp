@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FontLoader;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lzy_totp/pages/account_list_page.dart';
+import 'package:lzy_totp/pages/add_account_page.dart';
 import 'package:lzy_totp/pages/ai_access_page.dart';
 
 import '../../test/support/fake_ai_vault.dart';
@@ -99,16 +100,18 @@ void main() {
     addTearDown(tester.view.reset);
 
     final storage = FakeStorage([
-      testAccount('1', 'GitHub', 'me@github.com',
-          secret: 'JBSWY3DPEHPK3PXP'),
+      testAccount('1', 'Jenkins', 'prod-deploy',
+              secret: 'JBSWY3DPEHPK3PXP')
+          .copyWith(note: '生产环境，仅发版时取码'),
       testAccount('2', 'Google', 'me@gmail.com',
-          secret: 'GEZDGNBVGY3TQOJQ'),
+              secret: 'GEZDGNBVGY3TQOJQ')
+          .copyWith(note: '测试环境'),
       testAccount('3', 'AWS', 'root@company.com',
           secret: 'KRSXG5CTMVRXEZLU'),
     ]);
     // 三种 AI 同步状态各展示一个：已放行 / 已同步但被 deny / 未同步
     final aiVault = FakeAiVaultService([
-      testAccount('1', 'GitHub', 'me@github.com',
+      testAccount('1', 'Jenkins', 'prod-deploy',
           secret: 'JBSWY3DPEHPK3PXP'),
       testAccount('2', 'Google', 'me@gmail.com',
               secret: 'GEZDGNBVGY3TQOJQ')
@@ -128,10 +131,12 @@ void main() {
     addTearDown(tester.view.reset);
 
     final storage = FakeStorage([
-      testAccount('1', 'GitHub', 'me@github.com',
-          secret: 'JBSWY3DPEHPK3PXP'),
+      testAccount('1', 'Jenkins', 'prod-deploy',
+              secret: 'JBSWY3DPEHPK3PXP')
+          .copyWith(note: '生产环境，仅发版时取码'),
       testAccount('2', 'Google', 'me@gmail.com',
-          secret: 'GEZDGNBVGY3TQOJQ'),
+              secret: 'GEZDGNBVGY3TQOJQ')
+          .copyWith(note: '测试环境'),
       testAccount('3', 'AWS', 'root@company.com',
           secret: 'KRSXG5CTMVRXEZLU'),
     ]);
@@ -176,6 +181,22 @@ void main() {
 
     await _shoot(tester, 'app-delete-confirm.png');
     await tester.pumpWidget(const SizedBox());
+  });
+
+  _macOsTest('编辑账户页', (tester) async {
+    tester.view.physicalSize = const Size(420, 820);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_frame(AddAccountPage(
+      initial: testAccount('1', 'Jenkins', 'prod-deploy',
+              secret: 'JBSWY3DPEHPK3PXP')
+          .copyWith(note: '生产环境，仅发版时取码'),
+      editing: true,
+    )));
+    await tester.pumpAndSettle();
+
+    await _shoot(tester, 'app-edit-account.png');
   });
 
   _macOsTest('AI 接入说明页（整页）', (tester) async {

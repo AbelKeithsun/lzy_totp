@@ -51,6 +51,22 @@ class FakeAiVaultService extends AiVaultService {
   }
 
   @override
+  Future<bool> replace(TotpAccount previous, TotpAccount updated) async {
+    if (failWith != null) throw failWith!;
+    final index = _accounts.indexWhere((a) =>
+        a.secret == previous.secret ||
+        (previous.displayTitle.isNotEmpty &&
+            a.displayTitle == previous.displayTitle));
+    if (index < 0) return false;
+    final existing = _accounts[index];
+    _accounts[index] = updated.copyWith(
+      id: existing.id,
+      aiAllowed: existing.aiAllowed,
+    );
+    return true;
+  }
+
+  @override
   Future<bool> unlink(TotpAccount account) async {
     unlinkCount++;
     if (failWith != null) throw failWith!;

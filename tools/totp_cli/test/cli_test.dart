@@ -54,6 +54,41 @@ void main() {
     return code;
   }
 
+  group('CLI 账户备注', () {
+    test('add --note 写入备注，list / info 都能看到', () async {
+      expect(
+        await run([
+          'add', 'prod-jenkins',
+          '--secret', 'JBSWY3DPEHPK3PXP',
+          '--issuer', 'Jenkins',
+          '--note', '生产环境',
+        ]),
+        ExitCode.ok,
+      );
+
+      await run(['list']);
+      expect(out.text, contains('Jenkins (prod-jenkins)'));
+      expect(out.text, contains('# 生产环境'));
+
+      await run(['info', 'prod-jenkins']);
+      expect(out.text, contains('备注：生产环境'));
+      expect(out.text, contains('发行方：Jenkins'));
+      expect(out.text, contains('账户名：prod-jenkins'));
+
+      await run(['list', '--json']);
+      expect(out.text, contains('"note": "生产环境"'));
+    });
+
+    test('未提供 --note 时备注为空，不会报错', () async {
+      expect(
+        await run(['add', 'plain', '--secret', 'JBSWY3DPEHPK3PXP']),
+        ExitCode.ok,
+      );
+      await run(['info', 'plain']);
+      expect(out.text, contains('备注：（无）'));
+    });
+  });
+
   group('CLI 基础命令', () {
     test('无参数时输出帮助并以 1 退出', () async {
       expect(await run([]), ExitCode.usage);
@@ -107,7 +142,10 @@ void main() {
       await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP', '--issuer', 'GitHub']);
       await run(['list', '--json']);
       final parsed = jsonDecode(out.text) as Map<String, dynamic>;
-      expect((parsed['accounts'] as List).first['account'], 'GitHub');
+      // 位置参数 <名称> 保留为账户名，--issuer 作为发行方 → 显示为「发行方 (账户名)」
+      expect((parsed['accounts'] as List).first['account'], 'GitHub (github)');
+      expect((parsed['accounts'] as List).first['label'], 'github');
+      expect((parsed['accounts'] as List).first['issuer'], 'GitHub');
       expect(out.text.contains('JBSWY3DPEHPK3PXP'), isFalse);
     });
 

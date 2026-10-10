@@ -80,6 +80,35 @@ void main() {
       (((response['result'] as Map)['content'] as List).first as Map)['text']
           as String;
 
+  group('账号备注（note）', () {
+    test('add_account 写入备注，list_accounts 元数据带回备注（仍不含密钥）', () async {
+      final added = toolJson(await callTool('add_account', {
+        'account': 'prod-jenkins',
+        'secret': 'JBSWY3DPEHPK3PXP',
+        'issuer': 'Jenkins',
+        'note': '生产环境',
+      }));
+      expect(added['note'], '生产环境');
+
+      final listed = toolJson(await callTool('list_accounts'));
+      final first = (listed['accounts'] as List).first as Map;
+      expect(first['note'], '生产环境');
+      expect(first.containsKey('secret'), isFalse);
+
+      final info = toolJson(
+          await callTool('get_account_info', {'account': 'prod-jenkins'}));
+      expect(info['note'], '生产环境');
+    });
+
+    test('add_from_uri 也支持备注', () async {
+      final added = toolJson(await callTool('add_from_uri', {
+        'uri': 'otpauth://totp/GitHub:me@github.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub',
+        'note': '个人账号',
+      }));
+      expect(added['note'], '个人账号');
+    });
+  });
+
   group('MCP 协议', () {
     test('initialize 返回协议版本与工具能力', () async {
       final r = await call({
@@ -212,7 +241,9 @@ void main() {
       final accounts = list['accounts'] as List;
       expect(accounts, hasLength(1));
       final first = accounts.first as Map;
-      expect(first['account'], 'GitHub');
+      // account 参数即账户名，issuer 单独保存 → 显示为「发行方 (账户名)」
+      expect(first['account'], 'GitHub (github)');
+      expect(first['label'], 'github');
       expect(first['ai_allowed'], isTrue);
       expect(jsonEncode(list).contains('JBSWY3DPEHPK3PXP'), isFalse,
           reason: '工具输出绝不能带出密钥');

@@ -53,7 +53,9 @@ dart compile exe bin/lzy_totp.dart -o ~/.local/bin/lzy-totp
 lzy-totp doctor
 
 # 3. 录入一个给 AI 用的账号
-lzy-totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub
+#    <名称> 就是账户名，始终保留；--issuer 发行方、--note 备注会随元数据一起给 AI
+lzy-totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub \
+  --label me@github.com --note 个人账号
 #    已经装过 App？不用重录：App 首页每行的云图标点一下即可同步进 vault（见下一节）
 
 # 4. 取码自测（agent 走的也是这条）
@@ -80,6 +82,8 @@ App 里的账号存在系统钥匙串，AI 侧只读 vault。两者原本各存�
 - **不会覆盖 deny**：被 CLI 禁止的账号，重复同步也不会把 `aiAllowed` 改回 true；
 - 每次同步 / 撤回都会写审计（`actor=app`、`note=source=app`），可用 `lzy-totp audit` 复查；
 - 撤回是单向的：只是从 vault 移除，App 里的账号不受影响；再点一下即可恢复同步；
+- **改了名字 / 备注也会同步过去**：编辑已同步的账号后，vault 里条目的名称、发行方、备注一并更新
+  （密钥若被修正也一起更新，不会残留旧条目）；`ai_allowed` 仍保持不变；
 - 目前只在 **macOS 桌面端**提供该入口（Android 上 vault 位于应用沙盒内，外部 agent 读不到）。
 
 ## 接入方式一：MCP server（推荐）
@@ -176,11 +180,11 @@ lzy-totp code github --json   # 结构化输出，带剩余秒数
 
 | 工具 | 必填参数 | 可选参数 | 作用 |
 |---|---|---|---|
-| `list_accounts` | — | — | 列出账号 + `ai_allowed` 标记（不含密钥） |
+| `list_accounts` | — | — | 列出账号 + 发行方 / 账户名 / 备注 + `ai_allowed`（不含密钥） |
 | `get_account_info` | `account` | — | 单个账号元数据（不含密钥） |
 | `generate_totp` | `account` | — | 取当前验证码；被 deny 的账号返回错误且不含任何码 |
-| `add_account` | `account`、`secret` | `issuer`、`label`、`digits`、`period`、`algorithm`、`block_ai` | 录入账号（`block_ai=true` 禁止 AI） |
-| `add_from_uri` | `uri` | `account`、`block_ai` | 从 `otpauth://` URI 录入 |
+| `add_account` | `account`、`secret` | `issuer`、`label`、`digits`、`period`、`algorithm`、`note`、`block_ai` | 录入账号（`account` 即账户名；`block_ai=true` 禁止 AI） |
+| `add_from_uri` | `uri` | `account`、`note`、`block_ai` | 从 `otpauth://` URI 录入 |
 | `remove_account` | `account` | — | 删除账号 |
 | `set_ai_allowed` | `account`、`allowed` | — | 允许 / 禁止个别账号 |
 
@@ -198,6 +202,32 @@ lzy-totp code github --json   # 结构化输出，带剩余秒数
   "expires_at": "2030-01-01T00:00:18.000Z"
 }
 ```
+
+## 账户名与备注：让 AI 分得清环境
+
+`list_accounts` / `get_account_info` 返回的元数据里包含 **issuer（发行方）、label（账户名）、note（备注）**，
+都不含密钥。agent 就是靠这三项判断「该取哪个环境的码」，所以值得填清楚：
+
+```json
+{
+  "account": "Jenkins (prod-deploy)",
+  "issuer": "Jenkins",
+  "label": "prod-deploy",
+  "note": "生产环境，仅发版时取码",
+  "digits": 6, "period": 30, "algorithm": "SHA1",
+  "ai_allowed": true
+}
+```
+
+- 同一系统（如 Jenkins）有多个环境时，用账户名区分：`prod-deploy` / `staging-deploy`；
+- 备注写人话（「生产环境」「客户 A 的机器」），AI 才能在你只说「取生产的码」时选对账号；
+- 名字有歧义时用 `lzy-totp info <名称>` 复查；`account` 参数支持按账户名 / 发行方 / `发行方 (账户名)` 匹配。
+
+CLI 的位置参数 `<名称>`（MCP 的 `account`）就是账户名，会被保留下来，`--issuer` / `--label` / `--note` 用来补充。
+
+App 侧：新增账号时**账户名必填**（带 `*` 标识），另有可选的发行方与备注；
+已录入的账号可以在 ⋮ 菜单 / 长按里选「编辑账户」补全——若该账号已经同步给 AI，
+改名后 vault 里的条目会一起更新，agent 不会继续看到旧名字。
 
 ## 数据文件
 

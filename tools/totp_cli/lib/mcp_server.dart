@@ -218,14 +218,16 @@ class McpServer {
 
     final account = TotpAccount(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
-      issuer: args['issuer'] as String? ?? name,
-      label: args['label'] as String? ?? '',
+      // account 参数就是「账户名」，必须保留下来，否则后续按名字查不到它
+      issuer: args['issuer'] as String? ?? '',
+      label: args['label'] as String? ?? name,
       secret: secret,
       digits: args['digits'] as int? ?? 6,
       period: args['period'] as int? ?? 30,
       algorithm: (args['algorithm'] as String? ?? 'SHA1').toUpperCase(),
       // 默认放行：只有显式传 block_ai=true 才禁止
       aiAllowed: !(args['block_ai'] as bool? ?? false),
+      note: args['note'] as String? ?? '',
     );
     accounts.add(account);
     await vault.save(accounts);
@@ -263,6 +265,7 @@ class McpServer {
       period: parsed.period,
       algorithm: parsed.algorithm,
       aiAllowed: parsed.aiAllowed,
+      note: args['note'] as String? ?? '',
     );
     accounts.add(account);
     await vault.save(accounts);
@@ -323,6 +326,7 @@ class McpServer {
         'period': a.period,
         'algorithm': a.algorithm,
         'ai_allowed': a.aiAllowed,
+        'note': a.note,
       };
 
   Future<TotpAccount> _requireAccount(String query) async {

@@ -4,9 +4,19 @@ import '../models/account.dart';
 import '../services/totp_service.dart';
 import '../utils/platform_utils.dart';
 
-/// 手动添加账户页
+/// 手动添加 / 编辑账户页。
+///
+/// - 新增：账户名与密钥必填（带 `*` 标识）；
+/// - 编辑：传入 [initial] 与 `editing: true`，保存时保留原 id 与 AI 权限；
+/// - 扫码后若二维码里没有账户名，也会带着 [initial] 进到这里补全。
 class AddAccountPage extends StatefulWidget {
-  const AddAccountPage({super.key});
+  const AddAccountPage({super.key, this.initial, this.editing = false});
+
+  /// 预填账号：编辑已有账号，或扫码后补全信息
+  final TotpAccount? initial;
+
+  /// 是否为「编辑已有账号」（只影响文案）
+  final bool editing;
 
   @override
   State<AddAccountPage> createState() => _AddAccountPageState();
@@ -14,19 +24,41 @@ class AddAccountPage extends StatefulWidget {
 
 class _AddAccountPageState extends State<AddAccountPage> {
   final _formKey = GlobalKey<FormState>();
-  final _issuerController = TextEditingController();
-  final _labelController = TextEditingController();
-  final _secretController = TextEditingController();
-  int _digits = 6;
-  int _period = 30;
-  String _algorithm = 'SHA1';
+  late final TextEditingController _issuerController;
+  late final TextEditingController _labelController;
+  late final TextEditingController _secretController;
+  late final TextEditingController _noteController;
+  late int _digits;
+  late int _period;
+  late String _algorithm;
+
+  @override
+  void initState() {
+    super.initState();
+    final initial = widget.initial;
+    _issuerController = TextEditingController(text: initial?.issuer ?? '');
+    _labelController = TextEditingController(text: initial?.label ?? '');
+    _secretController = TextEditingController(text: initial?.secret ?? '');
+    _noteController = TextEditingController(text: initial?.note ?? '');
+    _digits = initial?.digits ?? 6;
+    _period = initial?.period ?? 30;
+    _algorithm = initial?.algorithm ?? 'SHA1';
+  }
 
   @override
   void dispose() {
     _issuerController.dispose();
     _labelController.dispose();
     _secretController.dispose();
+    _noteController.dispose();
     super.dispose();
+  }
+
+  String? _validateLabel(String? value) {
+    if ((value ?? '').trim().isEmpty) {
+      return '请填写账户名，用于区分不同系统 / 环境';
+    }
+    return null;
   }
 
   String? _validateSecret(String? value) {
@@ -51,8 +83,10 @@ class _AddAccountPageState extends State<AddAccountPage> {
 
   void _save() {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    final base = widget.initial;
     final account = TotpAccount(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      // 编辑时保留原 id（列表按 id 定位，AI vault 也已关联）
+      id: base?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
       issuer: _issuerController.text.trim(),
       label: _labelController.text.trim(),
       secret:
@@ -60,19 +94,43 @@ class _AddAccountPageState extends State<AddAccountPage> {
       digits: _digits,
       period: _period,
       algorithm: _algorithm,
+      aiAllowed: base?.aiAllowed ?? TotpAccount.defaultAiAllowed,
+      note: _noteController.text.trim(),
     );
     Navigator.of(context).pop(account);
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final editing = widget.editing;
     return Scaffold(
-      appBar: AppBar(title: const Text('手动添加')),
+      appBar: AppBar(title: Text(editing ? '编辑账户' : '手动添加')),
       body: Form(
         key: _formKey,
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            Text(
+              '带 * 的为必填项。账户名会显示在首页，用来区分不同系统 / 环境。',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _labelController,
+              decoration: const InputDecoration(
+                labelText: '账户名 *',
+                hintText: '如 GitHub、公司 VPN、生产环境 Jenkins',
+                border: OutlineInputBorder(),
+              ),
+              textInputAction: TextInputAction.next,
+              autocorrect: false,
+              // 编辑时的重点是改名字，直接聚焦这里
+              autofocus: editing,
+              validator: _validateLabel,
+            ),
+            const SizedBox(height: 16),
             TextFormField(
               controller: _issuerController,
               decoration: const InputDecoration(
@@ -80,15 +138,7 @@ class _AddAccountPageState extends State<AddAccountPage> {
                 hintText: '如 GitHub',
                 border: OutlineInputBorder(),
               ),
-            ),
-            const SizedBox(height: 16),
-            TextFormField(
-              controller: _labelController,
-              decoration: const InputDecoration(
-                labelText: '账户名（可选）',
-                hintText: '如 user@example.com',
-                border: OutlineInputBorder(),
-              ),
+              textInputAction: TextInputAction.next,
             ),
             const SizedBox(height: 16),
             TextFormField(
@@ -99,9 +149,19 @@ class _AddAccountPageState extends State<AddAccountPage> {
                 border: OutlineInputBorder(),
               ),
               autocorrect: false,
-              // 桌面端打开即聚焦，Cmd+V 直接粘贴密钥
-              autofocus: AppPlatform.isDesktop,
+              // 新增时先粘贴密钥，聚焦这里；编辑时聚焦账户名
+              autofocus: !editing && AppPlatform.isDesktop,
               validator: _validateSecret,
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _noteController,
+              decoration: const InputDecoration(
+                labelText: '备注（可选）',
+                hintText: '如：生产环境 / 测试环境、给哪台机器用',
+                border: OutlineInputBorder(),
+              ),
+              textInputAction: TextInputAction.next,
             ),
             const SizedBox(height: 24),
             Row(
@@ -149,7 +209,7 @@ class _AddAccountPageState extends State<AddAccountPage> {
             FilledButton.icon(
               onPressed: _save,
               icon: const Icon(Icons.check),
-              label: const Text('保存'),
+              label: Text(editing ? '保存修改' : '保存'),
             ),
           ],
         ),

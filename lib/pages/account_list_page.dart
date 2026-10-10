@@ -117,17 +117,27 @@ class _AccountListPageState extends State<AccountListPage> {
     }
     if (choice == null || !mounted) return;
 
-    final TotpAccount? account = await Navigator.of(context).push(
+    final scanned = await Navigator.of(context).push<TotpAccount>(
       MaterialPageRoute(
         builder: (_) => choice == 'scan'
             ? const ScanPage()
             : const AddAccountPage(),
       ),
     );
-    if (account != null) {
-      setState(() => _accounts.add(account));
-      await _persist();
+    if (scanned == null || !mounted) return;
+
+    // 账户名必填：二维码里没带名称时，带着已解析的参数让用户补一个再入库
+    var account = scanned;
+    if (account.label.trim().isEmpty) {
+      final completed = await Navigator.of(context).push<TotpAccount>(
+        MaterialPageRoute(builder: (_) => AddAccountPage(initial: account)),
+      );
+      if (completed == null || !mounted) return;
+      account = completed;
     }
+
+    setState(() => _accounts.add(account));
+    await _persist();
   }
 
   /// 删除前的二次确认（左滑与菜单删除共用同一段文案）
@@ -175,6 +185,39 @@ class _AccountListPageState extends State<AccountListPage> {
     if (_accounts.any((a) => a.id == account.id)) return;
     setState(() => _accounts.insert(index.clamp(0, _accounts.length), account));
     await _persist();
+  }
+
+  /// 打开编辑页补全账户名 / 发行方 / 备注，保存后写回本地存储；
+  /// 若该账号已同步给 AI，vault 里的条目也跟着更新（避免 agent 看到旧名字）。
+  Future<void> _editAccount(TotpAccount account) async {
+    final updated = await Navigator.of(context).push<TotpAccount>(
+      MaterialPageRoute(
+        builder: (_) => AddAccountPage(initial: account, editing: true),
+      ),
+    );
+    if (updated == null || !mounted) return;
+
+    final index = _accounts.indexWhere((a) => a.id == account.id);
+    if (index < 0) return;
+    setState(() => _accounts[index] = updated);
+    await _persist();
+    if (!mounted) return;
+
+    final synced =
+        _aiSyncEnabled && _aiVault.stateOf(account, _vaultAccounts) != VaultSyncState.notSynced;
+    if (synced) {
+      try {
+        await _aiVault.replace(account, updated);
+        await _reloadVault();
+        if (!mounted) return;
+        _snack('已保存「${updated.displayTitle}」，并更新了 vault 里的条目');
+        return;
+      } catch (e) {
+        _snackError('已保存，但更新 AI vault 失败：${_describe(e)}');
+        return;
+      }
+    }
+    _snack('已保存「${updated.displayTitle}」');
   }
 
   /// 点一下：把 App 里已录入的账号写进 AI vault（或按状态给出说明）
@@ -328,6 +371,7 @@ class _AccountListPageState extends State<AccountListPage> {
                   // 左滑：先确认，再落库删除
                   onConfirmDelete: () => _confirmDelete(account),
                   onDelete: () => _removeAccount(account),
+                  onEdit: () => _editAccount(account),
                   aiState: _aiSyncEnabled
                       ? _aiVault.stateOf(account, _vaultAccounts)
                       : null,
@@ -345,7 +389,7 @@ class _AccountListPageState extends State<AccountListPage> {
 }
 
 /// 列表项菜单里的操作
-enum _RowAction { copy, aiSync, delete }
+enum _RowAction { edit, copy, aiSync, delete }
 
 class _AccountTile extends StatelessWidget {
   const _AccountTile({
@@ -354,6 +398,7 @@ class _AccountTile extends StatelessWidget {
     required this.onCopy,
     required this.onConfirmDelete,
     required this.onDelete,
+    required this.onEdit,
     required this.onAiTap,
     this.aiState,
   });
@@ -366,6 +411,9 @@ class _AccountTile extends StatelessWidget {
 
   /// 已确认后真正删除
   final VoidCallback onDelete;
+
+  /// 打开编辑页（补账户名 / 发行方 / 备注）
+  final VoidCallback onEdit;
 
   /// 点一下同步给 AI / 取消同步（null 表示当前平台不提供该功能）
   final VoidCallback onAiTap;
@@ -404,6 +452,8 @@ class _AccountTile extends StatelessWidget {
 
   void _handleAction(_RowAction action, String code) {
     switch (action) {
+      case _RowAction.edit:
+        onEdit();
       case _RowAction.copy:
         onCopy(code);
       case _RowAction.aiSync:
@@ -422,6 +472,11 @@ class _AccountTile extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('编辑账户'),
+              onTap: () => Navigator.pop(ctx, _RowAction.edit),
+            ),
             ListTile(
               leading: const Icon(Icons.copy),
               title: const Text('复制验证码'),
@@ -474,15 +529,31 @@ class _AccountTile extends StatelessWidget {
       child: ListTile(
         onTap: () => onCopy(code),
         onLongPress: () => _showActionsSheet(context, code),
+        isThreeLine: account.note.isNotEmpty,
         title: Text(account.displayTitle,
             maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text(
-          grouped,
-          style: theme.textTheme.headlineSmall?.copyWith(
-            fontFamily: 'monospace',
-            fontWeight: FontWeight.bold,
-            letterSpacing: 2,
-          ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              grouped,
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.bold,
+                letterSpacing: 2,
+              ),
+            ),
+            if (account.note.isNotEmpty)
+              Text(
+                '# ${account.note}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+          ],
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
@@ -530,6 +601,16 @@ class _AccountTile extends StatelessWidget {
               icon: const Icon(Icons.more_vert, size: 20),
               onSelected: (action) => _handleAction(action, code),
               itemBuilder: (_) => [
+                const PopupMenuItem(
+                  value: _RowAction.edit,
+                  child: Row(
+                    children: [
+                      Icon(Icons.edit_outlined, size: 18),
+                      SizedBox(width: 12),
+                      Text('编辑账户'),
+                    ],
+                  ),
+                ),
                 const PopupMenuItem(
                   value: _RowAction.copy,
                   child: Row(
