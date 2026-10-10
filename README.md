@@ -15,6 +15,9 @@ Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authentica
   - macOS：Keychain（传统 keychain，`usesDataProtectionKeychain: false`，无需签名 entitlement）
 - **首页**：验证码实时刷新、倒计时圆环、点击复制、左滑删除
   （桌面端列表项额外提供显式复制按钮）
+- **删除账户**：每条账户都有明确的删除入口——行尾 `⋮` 菜单（桌面端不用左滑）、长按弹操作面板、
+  以及原有左滑；删除前二次确认，删完可点「撤销」恢复
+- **AI 接入说明**：App 内「AI 接入」页给出三步接入、可复制的 MCP 配置 JSON 与 CLI 命令、工具清单与安全提示
 
 ## 平台支持
 
@@ -27,6 +30,25 @@ Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authentica
 平台差异集中判断于 `lib/utils/platform_utils.dart`（`AppPlatform.isDesktop` / `supportsScan`），
 业务逻辑两端完全共用。
 
+## 界面
+
+<p>
+  <img src="docs/images/app-account-list.png" width="270" alt="账户列表：每行都有复制与 ⋮ 菜单">
+  <img src="docs/images/app-account-menu.png" width="270" alt="行尾菜单：复制验证码 / 删除账户">
+  <img src="docs/images/app-delete-confirm.png" width="270" alt="删除二次确认弹窗">
+</p>
+
+<p>
+  <img src="docs/images/app-ai-access.png" width="270" alt="AI 接入说明页">
+</p>
+
+截图由 `tool/screenshots/capture_test.dart` 用真实 widget 树渲染生成（不依赖屏幕录制权限，
+也不需要跑起 GUI）：
+
+```bash
+flutter test tool/screenshots/capture_test.dart --update-goldens   # 产物写入 docs/images/
+```
+
 ## 项目结构
 
 ```
@@ -36,7 +58,8 @@ lib/                              # Flutter App（Android + macOS）
   services/totp_service.dart      # → 转发到 totp_core 的 TOTP 计算
   services/storage_service.dart   # 加密本地存储（按平台选择 Keychain 策略）
   utils/platform_utils.dart       # 平台能力判断
-  pages/account_list_page.dart    # 首页列表
+  pages/account_list_page.dart    # 首页列表（复制 / 删除 / 撤销）
+  pages/ai_access_page.dart       # AI 接入说明页（可复制 MCP 配置与 CLI 命令）
   pages/scan_page.dart            # 扫码页
   pages/add_account_page.dart     # 手动添加页
 packages/totp_core/               # 共享内核（纯 Dart，App / CLI / MCP 共用）
@@ -50,25 +73,58 @@ tools/totp_cli/                   # 命令行 + MCP server
   bin/lzy_totp.dart               # CLI 入口
   lib/cli.dart                    # 命令实现
   lib/mcp_server.dart             # MCP stdio server（7 个工具）
-docs/ai-access.md                 # 让 AI 查询验证码：安装、用法、安全边界
+docs/ai-access.md                 # AI agent 接入指南：架构、快速开始、客户端配置、安全边界、排错
+docs/images/                      # 界面截图（由 tool/screenshots 生成）
+tool/screenshots/capture_test.dart # 截图生成器（不在 test/ 下，flutter test 不会自动跑）
 test/totp_test.dart               # RFC 6238 向量 + URI 解析 + 序列化测试
 test/widget_test.dart             # 启动冒烟测试
+test/account_list_test.dart       # 账户删除（菜单 / 长按 / 左滑 + 确认 + 撤销）
+test/ai_access_page_test.dart     # AI 接入页内容与复制
 ```
 
-## 让 AI 查询验证码
+## 让 AI agent 接入 lzy_totp
 
-除了给人用的 App，本仓库还提供一个给 AI agent 调用的取码接口——CLI 与 MCP server 两种外壳、
+除了给人用的 App，本仓库还提供一个给 AI agent 调用的取码接口——MCP server 与 CLI 两种外壳、
 同一个加密 vault、同一套「默认放行 + 黑名单」策略：
 
 ```bash
-lzy-totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub   # 录入（默认即允许 AI）
-lzy-totp code github --json                                     # 取码
-lzy-totp deny "Bank (me@x.com)"                                 # 把敏感账号排除在 AI 之外
-lzy-totp mcp                                                     # 以 MCP stdio server 运行
+# 1. 装一次
+cd tools/totp_cli && dart pub get
+dart compile exe bin/lzy_totp.dart -o ~/.local/bin/lzy-totp
+
+# 2. 录入账号（默认即允许 AI 取码，敏感账号加 --block-ai）
+lzy-totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub
+
+# 3. 取码 / 黑名单 / 审计
+lzy-totp code github --json
+lzy-totp deny "Bank (me@x.com)"
+lzy-totp audit --tail 20
+
+# 4. 作为 MCP server 运行（stdio，不开端口）
+lzy-totp mcp
 ```
 
-核心安全设计：**只返回一次性验证码，永不返回密钥**；默认放行、可用 `deny` 把个别账号（银行、主邮箱等）排除在 AI 之外；
-每次取码（含被拒绝的）都写审计日志。完整说明见 [docs/ai-access.md](docs/ai-access.md)。
+接入 MCP 客户端只需一段配置（Claude Desktop / Cursor / Windsurf / Cline 通用）：
+
+```json
+{
+  "mcpServers": {
+    "lzy_totp": {
+      "command": "/Users/<你的用户名>/.local/bin/lzy-totp",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Claude Code 一行搞定：`claude mcp add lzy_totp -- ~/.local/bin/lzy-totp mcp`；
+DSH 用 `@deepseek-ai/dsh-mcp-client`（工具名形如 `mcp__lzy_totp__generate_totp`）——
+完整配置见 [docs/ai-access.md](docs/ai-access.md)，App 首页右上角的机器人图标也内置了同样内容的
+「AI 接入」说明页（配置与命令可一键复制，见[界面](#界面)最后一张截图）。
+
+核心安全设计：**只返回一次性验证码，永不返回密钥**；默认放行、可用 `deny` 把个别账号（银行、主邮箱等）
+排除在 AI 之外；每次取码（含被拒绝的）都写审计日志。App 的账号存在系统钥匙串，
+与 AI 读取的 vault 相互独立——想给 AI 用的账号需要用 CLI 录入一次。
 
 ## 构建
 
