@@ -269,9 +269,57 @@ Developer ID 证书 + 公证流程。
 本 App 通过 GitHub Releases / 本地构建分发、不上架 Mac App Store，因此不受沙盒要求约束。
 若你不需要 App 内的同步功能，把该键改回 `true` 重新构建即可（CLI 侧不受影响）。
 
-**关于钥匙串授权弹窗**：ad-hoc 签名没有稳定的证书，每次重新构建 cdhash 都会变，
-系统因此可能弹一次「lzy_totp 想使用您钥匙串中的机密信息」，选「允许 / 始终允许」即可
-（本文档的每次升级都做过预授权，但重建后仍可能弹一次）。
-若要彻底免掉这个弹窗，需要用一张**固定的自签名证书**（或 Apple Developer ID）签名，
-让钥匙串条目的 ACL 认「证书 + bundle id」而不是每次变化的 cdhash——
-代价是要在登录钥匙串里生成一次证书，属于可选优化。
+### 关于「lzy_totp 想使用您钥匙串中的机密信息」弹窗
+
+App 的账号存在系统钥匙串（`flutter_secure_storage_service` / `totp_accounts_v1`）。
+**每次重新构建/升级后，第一次打开可能弹一次授权，点「允许」即可；同一版本再打开不会再弹**
+（钥匙串按代码身份记住授权）。
+
+原因（已用 `log show` 逐条核对）：Flutter 默认 **ad-hoc 签名**，其代码身份就是 cdhash，
+每次构建都会变。钥匙串条目有两道门：
+
+| 门 | 记的是什么 | 重建后 |
+|---|---|---|
+| ACL（哪些 App 可用） | App 的代码要求 | ad-hoc 时是 `cdhash H"..."`，会变 |
+| 分区列表 / XARA（分区是否匹配） | 客户端的分区 ID | 非 Apple 签发证书的客户端，分区 ID **仍然是它的 cdhash**，会变 |
+
+所以「重建一次、弹一次」是 ad-hoc 签名的固有行为。
+
+**实测过的结论**：本仓库提供 `tool/macos/sign_local.sh`，用一张本机自签名证书重新签名，
+可以让第一条门变成稳定的 `identifier + certificate root`（不再含 cdhash），
+**但第二条门依旧按 cdhash 判定，弹窗照旧**——自签名证书并不能消掉它，别在这上面绕弯路。
+
+真正能免掉弹窗只有两条路：
+
+1. **用 Apple 签发的证书签名**（Xcode 登录 Apple ID 后免费的「Apple Development」证书，
+   或付费 Developer ID）：客户端的代码身份变成 `teamid:<TEAMID>` 且稳定，
+   两道门都不再随构建变化，弹窗彻底消失。需要在 Xcode 里登录一次 Apple ID，
+   之后用 `tool/macos/sign_local.sh <app> "Apple Development: 你的名字 (TEAMID)"` 重签即可。
+2. **让 App 不再用钥匙串**（把 App 的账号也放进 `~/.config/lzy_totp` 的加密 vault）：
+   弹窗消失、AI 侧也自动可见。代价是密钥保护从「钥匙串托管」降级为
+   「AES-256-GCM + 旁边一个 600 权限的 `vault.key` 文件」——
+   对 2FA 应用来说这是**降低**静态保护，不建议作为默认。
+
+> CLI / MCP（AI 侧）不碰钥匙串，所以 **AI 取码永远不会触发这个弹窗**：
+> 它只读 `~/.config/lzy_totp/vault.json` 与 `vault.key` 两个普通文件。
+
+#### 可选：生成本机自签名证书
+
+```bash
+mkdir -p ~/.lzy_totp-signing && chmod 700 ~/.lzy_totp-signing
+cd ~/.lzy_totp-signing
+openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+  -keyout lzy_totp.key -out lzy_totp.crt \
+  -subj "/CN=lzy_totp Local Signing/O=lzy_totp/C=CN" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "keyUsage=critical,digitalSignature" \
+  -addext "extendedKeyUsage=critical,codeSigning"
+# 注意：不要用 p12 导入（macOS 的 security 与 OpenSSL 3 的 PKCS#12 算法不兼容，
+# 会报 MAC verification failed），分开导入 key 与 crt 即可：
+security import lzy_totp.key -k ~/Library/Keychains/login.keychain-db \
+  -T /usr/bin/codesign -T /usr/bin/security
+security import lzy_totp.crt -k ~/Library/Keychains/login.keychain-db
+
+# 构建后签名（由内向外签，保留 entitlements）
+tool/macos/sign_local.sh build/macos/Build/Products/Release/lzy_totp.app
+```
