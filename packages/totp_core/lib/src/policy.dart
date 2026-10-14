@@ -1,4 +1,5 @@
 import 'account.dart';
+import 'settings.dart';
 
 /// AI / 自动化工具访问策略。
 ///
@@ -13,7 +14,16 @@ class AiAccessPolicy {
 
   static bool allows(TotpAccount account) => account.aiAllowed;
 
-  /// 不允许时返回给调用方的说明；允许时返回 null。
+  /// 总开关（App 的「AI / MCP 服务」开关）判定：关闭时返回拒绝理由，开启时返回 null。
+  ///
+  /// 与单账号策略分开：总开关是「一刀切」的闸门，优先于账号级的 aiAllowed。
+  static String? globalSwitchDenial(TotpSettings settings) {
+    if (settings.aiAccessEnabled) return null;
+    return 'AI / MCP 取码总开关已关闭（在 App 的「设置 → AI / MCP 服务」里打开；'
+        '或在终端执行 lzy-totp ai on 并确认）。';
+  }
+
+  /// 单账号策略：不允许时返回给调用方的说明；允许时返回 null。
   static String? denialReason(TotpAccount account) {
     if (allows(account)) return null;
     return '账号「${account.displayTitle}」已被显式禁止 AI 取码（lzy-totp deny）。'

@@ -26,16 +26,24 @@ class McpServer {
   McpServer({
     required this.vault,
     required this.audit,
+    SettingsStore? settings,
     this.serverName = 'lzy_totp',
     this.serverVersion = '0.1.0',
-  });
+  }) : settings = settings ?? SettingsStore(paths: vault.paths);
 
   final VaultStore vault;
   final AuditLog audit;
+
+  /// 本地设置（AI / MCP 总开关）——关闭时所有工具调用一律拒绝
+  final SettingsStore settings;
   final String serverName;
   final String serverVersion;
 
   static const supportedProtocolVersion = '2025-06-18';
+
+  static const _baseInstructions =
+      'lzy_totp 一次性验证码（TOTP）服务。用 list_accounts 查看可用账号，'
+      '用 generate_totp 取当前验证码（默认放行；被 deny 的账号会拒绝并说明原因）。';
 
   /// 处理单条 JSON-RPC 消息；返回 null 表示无需响应（通知）。
   Future<Map<String, dynamic>?> handle(Map<String, dynamic> message) async {
@@ -102,15 +110,18 @@ class McpServer {
     switch (method) {
       case 'initialize':
         final requested = params['protocolVersion'] as String?;
+        final off = !(await settings.load()).aiAccessEnabled;
         return {
           'protocolVersion': requested ?? supportedProtocolVersion,
           'capabilities': {
             'tools': {'listChanged': false}
           },
           'serverInfo': {'name': serverName, 'version': serverVersion},
-          'instructions':
-              'lzy_totp 一次性验证码（TOTP）服务。用 list_accounts 查看可用账号，'
-                  '用 generate_totp 取当前验证码（默认放行；被 deny 的账号会拒绝并说明原因）。',
+          'instructions': off
+              ? '【已关闭】$_baseInstructions '
+                  '注意：AI / MCP 取码总开关当前处于关闭状态，任何工具调用都会被拒绝，'
+                  '请不要重试；需要取码请让用户在 App 的「设置 → AI / MCP 服务」里打开。'
+              : _baseInstructions,
         };
       case 'ping':
         return <String, dynamic>{};
@@ -119,6 +130,18 @@ class McpServer {
       case 'tools/call':
         final name = params['name'] as String?;
         if (name == null) throw McpToolError('缺少参数 name');
+        // 总闸优先：关闭时连工具名都不必看
+        final off = AiAccessPolicy.globalSwitchDenial(await settings.load());
+        if (off != null) {
+          await audit.append(AuditEntry(
+            action: 'tools_call',
+            result: 'denied',
+            actor: 'mcp',
+            note: 'global_disabled',
+          ));
+          // MCP 规范：工具的业务失败放在 result 里标记 isError，便于 agent 读到原因
+          throw McpToolError('$off（MCP 服务已关闭，所有工具调用都会被拒绝，请勿重试）');
+        }
         final args = params['arguments'] is Map
             ? (params['arguments'] as Map).cast<String, dynamic>()
             : <String, dynamic>{};

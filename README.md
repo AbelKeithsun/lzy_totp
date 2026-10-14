@@ -22,6 +22,9 @@ Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authentica
 - **删除账户**：每条账户都有明确的删除入口——行尾 `⋮` 菜单（桌面端不用左滑）、长按弹操作面板、
   以及原有左滑；删除前二次确认，删完可点「撤销」恢复
 - **AI 接入说明**：App 内「AI 接入」页给出三步接入、可复制的 MCP 配置 JSON 与 CLI 命令、工具清单与安全提示
+- **AI / MCP 总开关**（设置页）：一键掐断取码权限——关闭后 CLI 读取与 MCP 全部工具立即被拒绝
+  （审计记 `global_disabled`），账号与 vault 不受影响；列表顶部会出现提示条。
+  终端同样可用 `lzy-totp ai on|off|status`，其中**重新开启只允许人工在交互终端确认**
 - **一键同步给 AI**（macOS）：账号行尾的云图标点一下，就把 App 里已录入的账号写进
   `~/.config/lzy_totp`，AI agent / MCP 立刻可取码；再点一下撤回，不用重录密钥。
   图标状态即权限状态（可读 / 未同步 / 已被 `lzy-totp deny` 禁止）
@@ -50,6 +53,11 @@ Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authentica
   <img src="docs/images/app-ai-access.png" width="270" alt="AI 接入说明页">
 </p>
 
+<p>
+  <img src="docs/images/app-settings.png" width="270" alt="设置页：AI / MCP 取码总开关">
+  <img src="docs/images/app-ai-off.png" width="270" alt="总开关关闭：列表顶部提示条">
+</p>
+
 截图由 `tool/screenshots/capture_test.dart` 用真实 widget 树渲染生成（不依赖屏幕录制权限，
 也不需要跑起 GUI）：
 
@@ -66,9 +74,11 @@ lib/                              # Flutter App（Android + macOS）
   services/totp_service.dart      # → 转发到 totp_core 的 TOTP 计算
   services/storage_service.dart   # 加密本地存储（按平台选择 Keychain 策略）
   services/ai_vault_service.dart  # App 账号 → AI vault 的桥（一键同步 / 撤回 + 审计）
+  services/ai_settings_service.dart # AI / MCP 总开关的读写（settings.json）
   utils/platform_utils.dart       # 平台能力判断
   pages/account_list_page.dart    # 首页列表（复制 / 删除 / 撤销）
   pages/ai_access_page.dart       # AI 接入说明页（可复制 MCP 配置与 CLI 命令）
+  pages/settings_page.dart        # 设置页：AI / MCP 取码总开关 + vault 状态
   pages/scan_page.dart            # 扫码页
   pages/add_account_page.dart     # 手动添加页
 packages/totp_core/               # 共享内核（纯 Dart，App / CLI / MCP 共用）
@@ -76,6 +86,7 @@ packages/totp_core/               # 共享内核（纯 Dart，App / CLI / MCP �
   lib/src/account.dart            # 账户模型 + otpauth:// 解析 + aiAllowed 标记
   lib/src/vault.dart              # AES-256-GCM 加密 vault
   lib/src/policy.dart             # AI 访问策略（默认放行 + deny 黑名单）
+  lib/src/settings.dart           # 本地设置（AI / MCP 总开关，App 与 CLI 共用）
   lib/src/audit.dart              # 审计日志
   lib/src/paths.dart              # 数据目录解析
 tools/totp_cli/                   # 命令行 + MCP server
@@ -136,6 +147,9 @@ DSH 用 `@deepseek-ai/dsh-mcp-client`（工具名形如 `mcp__lzy_totp__generate
 
 已经装了 App 的话，不必用 CLI 重录：macOS 首页每个账号行尾有云图标，**点一下就同步进 vault**
 （再点一下撤回，可撤销；不会覆盖已经被 `deny` 的账号）。
+
+想临时或永久掐断 AI 取码，用 App 的**设置页总开关**（或 `lzy-totp ai off`）：关闭后
+CLI 读取与 MCP 全部工具都会被拒绝并记审计，账号照旧保存。
 
 `list_accounts` / `get_account_info` 会把**发行方、账户名、备注**一起给 AI（但不含密钥），
 所以把账户名与备注填好，agent 才分得清该取哪个环境的码。

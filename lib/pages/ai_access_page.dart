@@ -141,6 +141,11 @@ class _Intro extends StatelessWidget {
           body: '首页每行的云图标点一下，就把 App 里已录入的账号写进 vault'
               '（再点一下取消）。不必重新录一遍密钥。',
         ),
+        _Bullet(
+          title: '总开关',
+          body: '「设置 → AI / MCP 服务」里可以一键关掉取码权限：关闭后 CLI 读取与 MCP '
+              '全部工具立即被拒绝（账号不受影响），列表顶部也会出现提示条。',
+        ),
         const SizedBox(height: 12),
         Text(
           '两者共用同一份 TOTP 实现、同一个 vault、同一套访问策略；'

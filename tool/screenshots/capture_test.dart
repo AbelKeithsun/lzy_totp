@@ -17,7 +17,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:lzy_totp/pages/account_list_page.dart';
 import 'package:lzy_totp/pages/add_account_page.dart';
 import 'package:lzy_totp/pages/ai_access_page.dart';
+import 'package:lzy_totp/pages/settings_page.dart';
 
+import '../../test/support/fake_ai_settings.dart';
 import '../../test/support/fake_ai_vault.dart';
 import '../../test/support/fake_storage.dart';
 
@@ -118,7 +120,11 @@ void main() {
           .copyWith(aiAllowed: false),
     ]);
     await tester.pumpWidget(
-        _frame(AccountListPage(storage: storage, aiVault: aiVault)));
+        _frame(AccountListPage(
+      storage: storage,
+      aiVault: aiVault,
+      aiSettings: FakeAiSettingsService(),
+    )));
     await tester.pumpAndSettle();
 
     await _shoot(tester, 'app-account-list.png');
@@ -149,7 +155,11 @@ void main() {
           .copyWith(aiAllowed: false),
     ]);
     await tester.pumpWidget(
-        _frame(AccountListPage(storage: storage, aiVault: aiVault)));
+        _frame(AccountListPage(
+      storage: storage,
+      aiVault: aiVault,
+      aiSettings: FakeAiSettingsService(),
+    )));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.more_vert).first);
@@ -170,8 +180,11 @@ void main() {
       testAccount('2', 'Google', 'me@gmail.com',
           secret: 'GEZDGNBVGY3TQOJQ'),
     ]);
-    await tester.pumpWidget(
-        _frame(AccountListPage(storage: storage, aiVault: FakeAiVaultService())));
+    await tester.pumpWidget(_frame(AccountListPage(
+      storage: storage,
+      aiVault: FakeAiVaultService(),
+      aiSettings: FakeAiSettingsService(),
+    )));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.more_vert).first);
@@ -197,6 +210,47 @@ void main() {
     await tester.pumpAndSettle();
 
     await _shoot(tester, 'app-edit-account.png');
+  });
+
+  _macOsTest('设置页（AI / MCP 总开关）', (tester) async {
+    tester.view.physicalSize = const Size(420, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final vault = FakeAiVaultService([
+      testAccount('1', 'Jenkins', 'prod-deploy',
+          secret: 'JBSWY3DPEHPK3PXP'),
+      testAccount('2', 'Google', 'me@gmail.com',
+              secret: 'GEZDGNBVGY3TQOJQ')
+          .copyWith(aiAllowed: false),
+    ]);
+    await tester.pumpWidget(_frame(SettingsPage(
+      aiSettings: FakeAiSettingsService(),
+      aiVault: vault,
+    )));
+    await tester.pumpAndSettle();
+
+    await _shoot(tester, 'app-settings.png');
+  });
+
+  _macOsTest('总开关关闭时的提示条', (tester) async {
+    tester.view.physicalSize = const Size(420, 400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final storage = FakeStorage([
+      testAccount('1', 'Jenkins', 'prod-deploy',
+              secret: 'JBSWY3DPEHPK3PXP')
+          .copyWith(note: '生产环境'),
+    ]);
+    await tester.pumpWidget(_frame(AccountListPage(
+      storage: storage,
+      aiVault: FakeAiVaultService(),
+      aiSettings: FakeAiSettingsService(enabled: false),
+    )));
+    await tester.pumpAndSettle();
+
+    await _shoot(tester, 'app-ai-off.png');
   });
 
   _macOsTest('AI 接入说明页（整页）', (tester) async {

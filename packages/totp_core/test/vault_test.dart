@@ -143,6 +143,7 @@ void main() {
     });
   });
   _noteFieldTests();
+  _settingsTests();
 }
 
 void _noteFieldTests() {
@@ -184,6 +185,56 @@ void _noteFieldTests() {
       expect(renamed.secret, 'JBSWY3DPEHPK3PXP');
       expect(renamed.label, 'work@github.com');
       expect(renamed.note, '工作');
+    });
+  });
+}
+
+void _settingsTests() {
+  group('本地设置与 AI 总开关', () {
+    late Directory dir;
+    late SettingsStore store;
+
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('lzy_settings_test');
+      store = SettingsStore(paths: TotpPaths(dir.path));
+    });
+
+    tearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+
+    test('文件不存在时默认开启（保持既有行为）', () async {
+      final settings = await store.load();
+      expect(settings.aiAccessEnabled, isTrue);
+      expect(File(store.paths.settingsFile).existsSync(), isFalse);
+    });
+
+    test('关闭后落盘并可读回，权限为 600', () async {
+      await store.setAiAccessEnabled(false);
+      expect((await store.load()).aiAccessEnabled, isFalse);
+      expect(
+        File(store.paths.settingsFile).statSync().mode & 0x1FF,
+        0x180, // 0600
+      );
+      // 再打开
+      await store.setAiAccessEnabled(true);
+      expect((await store.load()).aiAccessEnabled, isTrue);
+    });
+
+    test('设置文件损坏时回退默认（不把用户锁在外面）', () async {
+      await store.setAiAccessEnabled(false);
+      File(store.paths.settingsFile).writeAsStringSync('{ 这不是 JSON');
+      expect((await store.load()).aiAccessEnabled, isTrue);
+    });
+
+    test('总开关判定优先于账号级策略', () {
+      final account = TotpAccount(
+          id: '1', issuer: 'GitHub', label: 'me@x.com', secret: 'JBSWY3DPEHPK3PXP');
+      expect(AiAccessPolicy.globalSwitchDenial(TotpSettings.enabled), isNull);
+      expect(AiAccessPolicy.allows(account), isTrue);
+
+      const off = TotpSettings(aiAccessEnabled: false);
+      expect(AiAccessPolicy.globalSwitchDenial(off), contains('总开关已关闭'));
     });
   });
 }

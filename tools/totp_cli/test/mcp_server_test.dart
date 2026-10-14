@@ -109,6 +109,62 @@ void main() {
     });
   });
 
+  group('AI / MCP 总开关', () {
+    test('关闭后所有工具调用都返回 isError，且不泄露账号信息', () async {
+      await vault.save([
+        TotpAccount(
+            id: '1', issuer: 'GitHub', label: 'me@x.com', secret: 'JBSWY3DPEHPK3PXP')
+      ]);
+      await SettingsStore(paths: paths).setAiAccessEnabled(false);
+
+      for (final tool in [
+        'list_accounts',
+        'get_account_info',
+        'generate_totp',
+        'add_account',
+        'remove_account',
+        'set_ai_allowed',
+      ]) {
+        final r = await callTool(tool, {'account': 'me@x.com', 'secret': 'JBSWY3DPEHPK3PXP', 'allowed': true});
+        final result = r['result'] as Map<String, dynamic>;
+        expect(result['isError'], isTrue, reason: '$tool 应被总闸拒绝');
+        final text = toolText(r);
+        expect(text, contains('总开关已关闭'), reason: tool);
+        expect(text, isNot(contains('JBSWY3DPEHPK3PXP')));
+        expect(text, isNot(contains('me@x.com')), reason: '不应带出账号信息');
+      }
+
+      final entries = await audit.tail(20);
+      expect(entries.any((e) => e.note == 'global_disabled' && e.result == 'denied'), isTrue);
+    });
+
+    test('关闭时 initialize 的 instructions 会明确告知已关闭', () async {
+      await SettingsStore(paths: paths).setAiAccessEnabled(false);
+      final r = await call({
+        'jsonrpc': '2.0',
+        'id': 1,
+        'method': 'initialize',
+        'params': {'protocolVersion': '2025-06-18', 'capabilities': {}},
+      });
+      final instructions =
+          (r['result'] as Map)['instructions'] as String;
+      expect(instructions, contains('【已关闭】'));
+      expect(instructions, contains('不要重试'));
+    });
+
+    test('重新开启后工具恢复正常', () async {
+      final store = SettingsStore(paths: paths);
+      await store.setAiAccessEnabled(false);
+      await store.setAiAccessEnabled(true);
+
+      final added = toolJson(await callTool('add_account', {
+        'account': 'github',
+        'secret': 'JBSWY3DPEHPK3PXP',
+      }));
+      expect(added['account'], 'github');
+    });
+  });
+
   group('MCP 协议', () {
     test('initialize 返回协议版本与工具能力', () async {
       final r = await call({

@@ -4,22 +4,32 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/account.dart';
+import '../services/ai_settings_service.dart';
 import '../services/ai_vault_service.dart';
 import '../services/storage_service.dart';
 import '../services/totp_service.dart';
 import '../utils/platform_utils.dart';
 import 'add_account_page.dart';
 import 'ai_access_page.dart';
+import 'settings_page.dart';
 import 'scan_page.dart';
 
 /// 首页：账户列表 + 实时刷新的验证码
 class AccountListPage extends StatefulWidget {
-  const AccountListPage({super.key, required this.storage, this.aiVault});
+  const AccountListPage({
+    super.key,
+    required this.storage,
+    this.aiVault,
+    this.aiSettings,
+  });
 
   final StorageService storage;
 
   /// AI vault 桥（默认连 ~/.config/lzy_totp）；测试可注入替身
   final AiVaultService? aiVault;
+
+  /// AI / MCP 总开关的读写（默认连同一目录的 settings.json）
+  final AiSettingsService? aiSettings;
 
   @override
   State<AccountListPage> createState() => _AccountListPageState();
@@ -32,8 +42,13 @@ class _AccountListPageState extends State<AccountListPage> {
   /// vault 里的账号快照，用来显示每行的「同步给 AI」状态
   List<TotpAccount> _vaultAccounts = [];
 
-  late final AiVaultService _aiVault =
-      widget.aiVault ?? AiVaultService();
+  late final AiVaultService _aiVault = widget.aiVault ?? AiVaultService();
+
+  late final AiSettingsService _aiSettings =
+      widget.aiSettings ?? AiSettingsService(paths: _aiVault.paths);
+
+  /// AI / MCP 取码总开关（关闭时列表顶部给一条醒目提示）
+  bool _aiAccessEnabled = true;
 
   /// 是否启用 App→vault 同步：只在桌面端（AI agent 跑在同一台机器上）有意义，
   /// Android 上 ~/.config/lzy_totp 位于沙盒内，外部 agent 读不到。
@@ -66,10 +81,19 @@ class _AccountListPageState extends State<AccountListPage> {
         vaultAccounts = [];
       }
     }
+    var aiEnabled = true;
+    if (_aiSyncEnabled) {
+      try {
+        aiEnabled = await _aiSettings.aiAccessEnabled();
+      } catch (_) {
+        aiEnabled = true; // 读不到设置时按默认（开启）显示，不误报「已关闭」
+      }
+    }
     if (mounted) {
       setState(() {
         _accounts = accounts;
         _vaultAccounts = vaultAccounts;
+        _aiAccessEnabled = aiEnabled;
       });
     }
   }
@@ -308,6 +332,16 @@ class _AccountListPageState extends State<AccountListPage> {
       ));
   }
 
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SettingsPage(aiSettings: _aiSettings, aiVault: _aiVault),
+      ),
+    );
+    // 回来时刷新总开关状态（可能刚被关掉）
+    await _load();
+  }
+
   void _openAiAccess() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const AiAccessPage()),
@@ -335,9 +369,20 @@ class _AccountListPageState extends State<AccountListPage> {
             tooltip: 'AI 接入说明',
             onPressed: _openAiAccess,
           ),
+          IconButton(
+            icon: Icon(_aiAccessEnabled
+                ? Icons.settings_outlined
+                : Icons.settings),
+            tooltip: _aiAccessEnabled ? '设置' : '设置（AI / MCP 取码已关闭）',
+            onPressed: _openSettings,
+          ),
         ],
       ),
-      body: _accounts.isEmpty
+      body: Column(
+        children: [
+          if (_aiSyncEnabled && !_aiAccessEnabled) _aiOffBanner(context),
+          Expanded(
+            child: _accounts.isEmpty
           ? Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -379,10 +424,41 @@ class _AccountListPageState extends State<AccountListPage> {
                 );
               },
             ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: _addAccount,
         tooltip: '添加账户',
         child: const Icon(Icons.add),
+      ),
+    );
+  }
+
+  /// 总开关关闭时的提示条：一眼看到「AI 现在取不到码」，点一下去设置
+  Widget _aiOffBanner(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.errorContainer,
+      child: InkWell(
+        onTap: _openSettings,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Icon(Icons.block,
+                  size: 18, color: theme.colorScheme.onErrorContainer),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'AI / MCP 取码已关闭 · 点此打开设置',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onErrorContainer),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

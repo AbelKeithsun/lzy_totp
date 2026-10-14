@@ -89,6 +89,97 @@ void main() {
     });
   });
 
+  group('AI / MCP 总开关', () {
+    test('默认开启，status 能看出状态与设置文件', () async {
+      expect(await run(['ai', 'status']), ExitCode.ok);
+      expect(out.text, contains('已开启'));
+      expect(out.text, contains('settings.json'));
+    });
+
+    test('ai off 后 list / info / code 一律拒绝（退出码 2）并写审计', () async {
+      await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP', '--issuer', 'GitHub']);
+      expect(await run(['ai', 'off']), ExitCode.ok);
+      expect(out.text, contains('已关闭'));
+
+      expect(await run(['list']), ExitCode.denied);
+      expect(err.text, contains('总开关已关闭'));
+      // 不含任何账号信息
+      expect(out.text, isEmpty);
+
+      expect(await run(['info', 'github']), ExitCode.denied);
+      expect(await run(['code', 'github']), ExitCode.denied);
+      expect(out.text, isEmpty, reason: '被总闸拦下时不应输出任何验证码');
+
+      expect(await run(['ai', 'status']), ExitCode.ok);
+      expect(out.text, contains('已关闭'));
+
+      await run(['audit', '--tail', '10']);
+      expect(out.text, contains('global_disabled'));
+      expect(out.text, contains('ai_switch'));
+    });
+
+    test('ai off 不影响人工运维命令（add / remove / deny 仍可用）', () async {
+      await run(['ai', 'off']);
+      expect(
+        await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP']),
+        ExitCode.ok,
+      );
+      expect(await run(['deny', 'github']), ExitCode.ok);
+      expect(await run(['remove', 'github']), ExitCode.ok);
+    });
+
+    test('非交互终端不允许开启总开关（防止 AI 自己把闸门打开）', () async {
+      await run(['ai', 'off']);
+      expect(await run(['ai', 'on']), ExitCode.denied);
+      expect(err.text, contains('只允许人工在交互终端确认'));
+      // 仍然是关闭状态
+      await run(['ai', 'status']);
+      expect(out.text, contains('已关闭'));
+
+      await run(['audit', '--tail', '5']);
+      expect(out.text, contains('non_tty_enable_attempt'));
+    });
+
+    test('交互终端下确认后可以重新开启', () async {
+      await run(['ai', 'off']);
+      final code = await run(
+        ['ai', 'on'],
+        ctx: context(stdinIsTerminal: true, confirm: (_) async => true),
+      );
+      expect(code, ExitCode.ok);
+      await run(['ai', 'status']);
+      expect(out.text, contains('已开启'));
+    });
+
+    test('交互终端下拒绝确认则保持关闭', () async {
+      await run(['ai', 'off']);
+      final code = await run(
+        ['ai', 'on'],
+        ctx: context(stdinIsTerminal: true, confirm: (_) async => false),
+      );
+      expect(code, ExitCode.denied);
+      await run(['ai', 'status']);
+      expect(out.text, contains('已关闭'));
+    });
+
+    test('总开关关闭时，人工在终端也能应急取码（记 human-tty-override）', () async {
+      await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP']);
+      await run(['ai', 'off']);
+
+      final code = await run(
+        ['code', 'github'],
+        ctx: context(stdinIsTerminal: true, confirm: (_) async => true),
+      );
+      expect(code, ExitCode.ok);
+      expect(out.text.trim(), hasLength(6));
+    });
+
+    test('ai 子命令参数错误时给用法', () async {
+      expect(await run(['ai', 'bogus']), ExitCode.usage);
+      expect(err.text, contains('ai <on|off|status>'));
+    });
+  });
+
   group('CLI 基础命令', () {
     test('无参数时输出帮助并以 1 退出', () async {
       expect(await run([]), ExitCode.usage);

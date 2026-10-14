@@ -9,5 +9,6 @@ export 'src/audit.dart';
 export 'src/fs_utils.dart';
 export 'src/paths.dart';
 export 'src/policy.dart';
+export 'src/settings.dart';
 export 'src/totp.dart';
 export 'src/vault.dart';

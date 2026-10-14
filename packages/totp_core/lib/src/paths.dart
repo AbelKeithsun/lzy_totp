@@ -36,4 +36,7 @@ class TotpPaths {
 
   /// 审计日志（JSONL）
   String get auditFile => p.join(home, 'audit.jsonl');
+
+  /// 本地设置（AI / MCP 总开关等）
+  String get settingsFile => p.join(home, 'settings.json');
 }

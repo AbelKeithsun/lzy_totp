@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:lzy_totp/pages/account_list_page.dart';
 import 'package:totp_core/totp_core.dart';
 
+import 'support/fake_ai_settings.dart';
 import 'support/fake_ai_vault.dart';
 import 'support/fake_storage.dart';
 
@@ -13,10 +14,17 @@ void main() {
     WidgetTester tester,
     FakeStorage storage, {
     FakeAiVaultService? aiVault,
+    FakeAiSettingsService? aiSettings,
   }) async {
     await tester.pumpWidget(MaterialApp(
-      home: AccountListPage(storage: storage, aiVault: aiVault),
+      home: AccountListPage(
+        storage: storage,
+        aiVault: aiVault,
+        aiSettings: aiSettings ?? FakeAiSettingsService(),
+      ),
     ));
+    // 两次：一次跑本地存储/钥匙串加载，一次跑设置（AI 总开关）读取
+    await tester.pump();
     await tester.pump();
   }
 
@@ -417,6 +425,50 @@ void main() {
       expect(vault.accounts.single.note, '银行卡');
       // 行内图标仍是「已被 deny」状态
       expect(find.byIcon(Icons.cloud_off), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
+  testWidgets('AI 总开关关闭时列表顶部显示提示条，点它能进设置', (tester) async {
+    await asMacOs(() async {
+      final storage = FakeStorage([testAccount('1', 'GitHub', 'me@github.com')]);
+      await pumpList(
+        tester,
+        storage,
+        aiVault: FakeAiVaultService(),
+        aiSettings: FakeAiSettingsService(enabled: false),
+      );
+
+      expect(find.textContaining('AI / MCP 取码已关闭'), findsOneWidget);
+      expect(find.byIcon(Icons.block), findsOneWidget);
+
+      await tester.tap(find.textContaining('AI / MCP 取码已关闭'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('设置'), findsOneWidget);
+      expect(find.byType(SwitchListTile), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
+  testWidgets('开关开启时不显示提示条，且 AppBar 有设置入口', (tester) async {
+    await asMacOs(() async {
+      final storage = FakeStorage([testAccount('1', 'GitHub', 'me@github.com')]);
+      await pumpList(
+        tester,
+        storage,
+        aiVault: FakeAiVaultService(),
+        aiSettings: FakeAiSettingsService(),
+      );
+
+      expect(find.textContaining('AI / MCP 取码已关闭'), findsNothing);
+      expect(find.byIcon(Icons.settings_outlined), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.settings_outlined));
+      await tester.pumpAndSettle();
+      expect(find.text('允许 AI / MCP 取码'), findsOneWidget);
 
       await unmount(tester);
     });

@@ -238,11 +238,37 @@ App 侧：新增账号时**账户名必填**（带 `*` 标识），另有可选�
 | `vault.json` | 账户元数据 + **密文**密钥 | `600` |
 | `vault.key` | AES-256-GCM 密钥（32 字节 base64） | `600` |
 | `audit.jsonl` | 审计日志（JSONL，只追加） | `600` |
+| `settings.json` | AI / MCP 总开关（App 设置页写入，CLI / MCP 读取） | `600` |
 
 这个目录由 **CLI / MCP 与 App 共用**：App 的「同步给 AI」写的就是这里的 `vault.json`，
 写入用「临时文件 + rename」原子替换，因此 App 与 agent 同时读写也不会写坏文件。
 
 > ⚠️ `vault.key` 与 `vault.json` 必须一起备份。密钥丢失后 vault 无法解密。
+
+## 总开关：一键掐断 AI 取码
+
+App 的「设置 → AI / MCP 服务」里有一个总开关（默认开启）。关掉之后：
+
+| 通道 | 关闭后的行为 |
+|---|---|
+| MCP | **全部 7 个工具**都返回 `isError`，提示「总开关已关闭……请勿重试」 |
+| CLI | `list` / `info` / `code` 一律拒绝（退出码 2） |
+| 审计 | 每条被拒记录写 `result=denied`、`note=global_disabled` |
+| 账号 | **不受影响**：vault、App 数据、`ai_allowed` 都不动，重新打开即恢复 |
+
+终端同样可以操作：
+
+```bash
+lzy-totp ai status   # 看当前状态与设置文件路径
+lzy-totp ai off      # 关闭（随时可以，fail closed）
+lzy-totp ai on       # 重新开启：**只允许人工在交互终端确认**，
+                     # 非交互（AI 子进程/管道）直接拒绝，防止被提示注入的 agent 自己把闸门打开
+```
+
+> 关于「MCP 服务开关」这个说法：MCP server **不是一个常驻服务**，而是客户端
+> （Claude Code / Cursor / DSH 等）在需要时按需拉起的 stdio 进程（`lzy-totp mcp`）。
+> 因此 App 里控制的是**取码权限的总闸**，而不是进程的启停。
+> 要彻底断开某个客户端，把它的 MCP 配置删掉即可，与本开关无关。
 
 ## 访问策略：默认放行 + 黑名单
 
@@ -294,6 +320,15 @@ $ lzy-totp code bank
 - **提示注入是主要风险**：agent 的上下文里若混入恶意内容（网页、issue、邮件），可能诱导它去取某个账号的码。
   强烈建议把银行、主邮箱、云账号根凭据这类账号 **`lzy-totp deny` 掉**，或干脆不要放进 vault。
 - 用 `lzy-totp list` 定期确认哪些账号处于放行状态。
+- **总开关是最快的止血阀**：怀疑 agent 被提示注入、或临时不想让它取码时，
+  在 App 里一键关掉即可（CLI 的 `ai off` 同样随时可用）；重新打开需要人工确认。
+- ⚠️ **总开关是策略闸门，不是安全边界**：它挡的是「守规矩的 CLI / MCP 调用」，
+  以及提示注入导致的顺手调用。如果某个 agent 已经能在你机器上执行任意 shell，
+  它可以直接改写 `~/.config/lzy_totp/settings.json`、甚至直接读 `vault.json` + `vault.key`
+  来解密——这种情况下任何本地开关都拦不住。真正的保护只有两条：
+  **不要把敏感账号放进 vault**，以及保持 `~/.config/lzy_totp` 的 600 权限。
+  （同理，`ai on` 的「必须人工确认」也只是抬高门槛：它依赖 stdin 不是终端，
+  而 MCP 客户端/agent 拉起的子进程通常确实不是终端。）
 - **App 里的云图标是「授权开关」**：点一下账号就进了 vault，等于把它的第二因子交给 AI。
   好在它是可撤销的（同一位置再点一下即撤回），且不会覆盖已经 `deny` 的账号；
   但仍建议同步前想清楚哪些账号不该进 vault。
@@ -312,6 +347,8 @@ $ lzy-totp code bank
 | 提示「未找到账户」 | 账号在 App 里但不在 vault 里——回 App 首页点该行的云图标同步，或用 `lzy-totp add` 录入 |
 | App 里点了云图标却没反应 / 报错 | 界面会给出具体原因（如 `vault.key` 丢失、目录不可写）；`lzy-totp doctor` 可复查 |
 | 云图标是禁用态 | 该账号已被 `lzy-totp deny`：`lzy-totp allow <名称>` 解除，或点提示里的「从 vault 移除」 |
+| agent 说工具全部被拒绝、提示「总开关已关闭」 | 在 App 的「设置 → AI / MCP 服务」里打开；或终端执行 `lzy-totp ai on` 并确认（`ai status` 可先确认状态） |
+| App 列表顶部出现红色「AI / MCP 取码已关闭」 | 同上，点那条提示即可进设置 |
 | `vault.json` 读不了 / 解密失败 | `vault.key` 丢了或权限不对：确认两文件同在 `~/.config/lzy_totp` 且为 `600`，`lzy-totp doctor` 会自检 |
 | 接入了但机器上原来有服务 | MCP server 由客户端按需拉起，退出客户端即结束进程；不存在常驻端口 |
 | 想换数据目录 | 设 `LZY_TOTP_HOME`（客户端配置里的 `env`） |
@@ -349,4 +386,6 @@ flutter analyze && flutter test
 - 新增账号默认 `ai_allowed=true`（默认放行），`--block-ai` 后才拒绝；
 - 非交互调用不会走人工确认通道；
 - MCP 协议：initialize / tools/list / tools/call / 通知不响应 / 非法 JSON 返回 -32700；
-- App：⋮ 菜单 / 长按 / 左滑三条路径都能删账号，删除先确认、可撤销、并且落库。
+- App：⋮ 菜单 / 长按 / 左滑三条路径都能删账号，删除先确认、可撤销、并且落库；
+- 总开关：关闭后 CLI 的 list / info / code 与 MCP 全部工具被拒且不带出任何账号信息；
+  `ai on` 在非交互终端被拒绝；App 设置页开关可持久化、写失败会回滚显示。

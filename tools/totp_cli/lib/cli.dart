@@ -18,14 +18,19 @@ class CliContext {
     required this.paths,
     required this.out,
     required this.err,
+    SettingsStore? settings,
     this.stdinIsTerminal = false,
     Confirm? confirm,
     this.stdinStream,
-  }) : confirm = confirm ?? _defaultConfirm;
+  })  : settings = settings ?? SettingsStore(paths: paths),
+        confirm = confirm ?? _defaultConfirm;
 
   final VaultStore vault;
   final AuditLog audit;
   final TotpPaths paths;
+
+  /// 本地设置（AI / MCP 总开关）。默认落在同一数据目录。
+  final SettingsStore settings;
   final IOSink out;
   final IOSink err;
 
@@ -91,6 +96,8 @@ Future<int> runCli(List<String> argv, CliContext ctx) async {
         return _setAllowed(ctx, command, false);
       case 'audit':
         return _audit(ctx, command);
+      case 'ai':
+        return _ai(ctx, command);
       case 'doctor':
         return _doctor(ctx);
       case 'mcp':
@@ -143,6 +150,7 @@ ArgParser _buildParser() {
       .addCommand('audit')
       .addOption('tail', defaultsTo: '20', help: '显示最近 N 条');
 
+  parser.addCommand('ai');
   parser.addCommand('doctor');
   parser.addCommand('mcp');
 
@@ -163,6 +171,7 @@ lzy_totp —— 一次性验证码（TOTP）命令行 / MCP 入口
   remove <名称>        删除账号
   allow <名称>         允许 AI 取码（默认即允许）
   deny <名称>          禁止 AI 取码（黑名单）
+  ai <on|off|status>  AI / MCP 取码总开关（off 立即生效；on 只允许人工在终端确认）
   audit               查看审计日志（--tail N）
   doctor              自检
   mcp                 启动 MCP stdio server
@@ -181,6 +190,8 @@ ${parser.usage}''';
 // --------------------------------------------------------------------- 命令
 
 Future<int> _list(CliContext ctx, ArgResults cmd) async {
+  final blocked = await _globalGate(ctx, 'list_accounts');
+  if (blocked != null) return blocked;
   final accounts = await ctx.vault.load();
   if (cmd['json'] as bool) {
     ctx.out.writeln(_encode({
@@ -222,6 +233,8 @@ Future<int> _info(CliContext ctx, ArgResults cmd) async {
     ctx.err.writeln('用法：lzy_totp info <名称>');
     return ExitCode.usage;
   }
+  final blocked = await _globalGate(ctx, 'get_account_info');
+  if (blocked != null) return blocked;
   final result = await _resolve(ctx, query);
   if (result.exitCode != null) return result.exitCode!;
   final a = result.account!;
@@ -250,13 +263,18 @@ Future<int> _code(CliContext ctx, ArgResults cmd) async {
   if (result.exitCode != null) return result.exitCode!;
   final account = result.account!;
 
-  var allowed = AiAccessPolicy.allows(account);
+  // 总开关优先于账号级策略
+  final globalDenial =
+      AiAccessPolicy.globalSwitchDenial(await ctx.settings.load());
+  var allowed = globalDenial == null && AiAccessPolicy.allows(account);
   String? overrideNote;
 
   if (!allowed && ctx.stdinIsTerminal) {
     // 交互终端下的人工通道：AI 非交互调用拿不到这条路径
-    final ok = await ctx.confirm(
-        '账号「${account.displayTitle}」已被禁止 AI 取码。确认以人工身份查看验证码？[y/N] ');
+    final prompt = globalDenial != null
+        ? 'AI / MCP 取码总开关已关闭。确认以人工身份查看验证码？[y/N] '
+        : '账号「${account.displayTitle}」已被禁止 AI 取码。确认以人工身份查看验证码？[y/N] ';
+    final ok = await ctx.confirm(prompt);
     if (ok) {
       allowed = true;
       overrideNote = 'human-tty-override';
@@ -264,14 +282,15 @@ Future<int> _code(CliContext ctx, ArgResults cmd) async {
   }
 
   if (!allowed) {
+    final reason = globalDenial ?? AiAccessPolicy.denialReason(account);
     await ctx.audit.append(AuditEntry(
       action: 'generate_totp',
       account: account.displayTitle,
       result: 'denied',
       actor: 'cli',
-      note: 'ai_blocked',
+      note: globalDenial != null ? 'global_disabled' : 'ai_blocked',
     ));
-    ctx.err.writeln('拒绝取码：${AiAccessPolicy.denialReason(account)}');
+    ctx.err.writeln('拒绝取码：$reason');
     return ExitCode.denied;
   }
 
@@ -447,6 +466,88 @@ Future<int> _audit(CliContext ctx, ArgResults cmd) async {
     ctx.out.writeln(e.toString());
   }
   return ExitCode.ok;
+}
+
+/// AI 通道总闸：关闭时拒绝读取类操作并记审计（人工运维命令不受影响）。
+Future<int?> _globalGate(CliContext ctx, String action) async {
+  final denial =
+      AiAccessPolicy.globalSwitchDenial(await ctx.settings.load());
+  if (denial == null) return null;
+  await ctx.audit.append(AuditEntry(
+    action: action,
+    result: 'denied',
+    actor: 'cli',
+    note: 'global_disabled',
+  ));
+  ctx.err.writeln(denial);
+  return ExitCode.denied;
+}
+
+/// ai on / off / status —— AI / MCP 取码总开关。
+///
+/// 设计：**关**随时可以（fail closed）；**开**只允许人工在交互终端里确认，
+/// 避免被提示注入的 AI 自己把闸门打开。
+Future<int> _ai(CliContext ctx, ArgResults cmd) async {
+  final sub = _firstArg(cmd)?.toLowerCase();
+  final settings = await ctx.settings.load();
+
+  if (sub == null || sub == 'status') {
+    ctx.out.writeln(
+        'AI / MCP 取码总开关：${settings.aiAccessEnabled ? '已开启' : '已关闭'}');
+    ctx.out.writeln('设置文件：${ctx.paths.settingsFile}');
+    if (!settings.aiAccessEnabled) {
+      ctx.out.writeln('关闭期间：CLI 的 list / info / code 与 MCP 的全部工具都会被拒绝'
+          '（账号与 vault 不受影响）。');
+    }
+    return ExitCode.ok;
+  }
+
+  switch (sub) {
+    case 'off':
+    case 'disable':
+      await ctx.settings.setAiAccessEnabled(false);
+      await ctx.audit.append(AuditEntry(
+        action: 'ai_switch',
+        result: 'ok',
+        actor: 'cli',
+        note: 'ai_access=false',
+      ));
+      ctx.out.writeln('已关闭 AI / MCP 取码：CLI 读取与 MCP 工具将一律被拒绝，账号不受影响。');
+      ctx.out.writeln('重新开启：App 的「设置 → AI / MCP 服务」，或终端执行 lzy-totp ai on。');
+      return ExitCode.ok;
+
+    case 'on':
+    case 'enable':
+      if (!ctx.stdinIsTerminal) {
+        ctx.err.writeln('拒绝：开启总开关只允许人工在交互终端确认（AI 子进程无法执行）。');
+        ctx.err.writeln('请在 App 的「设置 → AI / MCP 服务」里打开。');
+        await ctx.audit.append(AuditEntry(
+          action: 'ai_switch',
+          result: 'denied',
+          actor: 'cli',
+          note: 'non_tty_enable_attempt',
+        ));
+        return ExitCode.denied;
+      }
+      final ok = await ctx.confirm('确认重新允许 AI / MCP 取码？[y/N] ');
+      if (!ok) {
+        ctx.err.writeln('已取消。');
+        return ExitCode.denied;
+      }
+      await ctx.settings.setAiAccessEnabled(true);
+      await ctx.audit.append(AuditEntry(
+        action: 'ai_switch',
+        result: 'ok',
+        actor: 'cli',
+        note: 'ai_access=true human-tty-override',
+      ));
+      ctx.out.writeln('已开启 AI / MCP 取码。');
+      return ExitCode.ok;
+
+    default:
+      ctx.err.writeln('用法：lzy_totp ai <on|off|status>');
+      return ExitCode.usage;
+  }
 }
 
 Future<int> _doctor(CliContext ctx) async {
