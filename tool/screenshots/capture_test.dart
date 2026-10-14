@@ -20,6 +20,7 @@ import 'package:lzy_totp/pages/ai_access_page.dart';
 import 'package:lzy_totp/pages/settings_page.dart';
 
 import '../../test/support/fake_ai_settings.dart';
+import '../../test/support/fake_mcp_service.dart';
 import '../../test/support/fake_ai_vault.dart';
 import '../../test/support/fake_storage.dart';
 
@@ -212,8 +213,8 @@ void main() {
     await _shoot(tester, 'app-edit-account.png');
   });
 
-  _macOsTest('设置页（AI / MCP 总开关）', (tester) async {
-    tester.view.physicalSize = const Size(420, 1400);
+  _macOsTest('设置页（MCP 服务启停 + 粘贴即用配置）', (tester) async {
+    tester.view.physicalSize = const Size(420, 1900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
@@ -225,8 +226,10 @@ void main() {
           .copyWith(aiAllowed: false),
     ]);
     await tester.pumpWidget(_frame(SettingsPage(
-      aiSettings: FakeAiSettingsService(),
+      // 打开总开关、并让 MCP 服务处于「运行中」，展示地址与三种粘贴片段
+      aiSettings: FakeAiSettingsService(mcpEnabled: true),
       aiVault: vault,
+      mcpService: FakeMcpService(running: true),
     )));
     await tester.pumpAndSettle();
 

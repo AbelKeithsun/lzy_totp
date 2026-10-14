@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:args/args.dart';
 import 'package:totp_core/totp_core.dart';
 
-import 'mcp_server.dart';
 
 /// 交互确认回调（仅在 stdin 是终端时使用）
 typedef Confirm = Future<bool> Function(String prompt);
@@ -102,6 +101,8 @@ Future<int> runCli(List<String> argv, CliContext ctx) async {
         return _doctor(ctx);
       case 'mcp':
         return _mcp(ctx);
+      case 'serve':
+        return _serve(ctx, command);
       default:
         ctx.err.writeln('未知命令：${command.name}');
         return ExitCode.usage;
@@ -153,6 +154,9 @@ ArgParser _buildParser() {
   parser.addCommand('ai');
   parser.addCommand('doctor');
   parser.addCommand('mcp');
+  parser
+      .addCommand('serve')
+      .addOption('port', defaultsTo: '45763', help: '监听端口（仅本机回环）');
 
   return parser;
 }
@@ -174,7 +178,8 @@ lzy_totp —— 一次性验证码（TOTP）命令行 / MCP 入口
   ai <on|off|status>  AI / MCP 取码总开关（off 立即生效；on 只允许人工在终端确认）
   audit               查看审计日志（--tail N）
   doctor              自检
-  mcp                 启动 MCP stdio server
+  mcp                 启动 MCP stdio server（客户端按需拉起）
+  serve               在本机启动常驻 MCP HTTP 服务（含粘贴即用的客户端配置）
 
 示例：
   lzy_totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub --note 个人账号
@@ -568,6 +573,47 @@ Future<int> _doctor(CliContext ctx) async {
   }
   ctx.out.writeln('账号数：${accounts.length}（其中禁止 AI 取码：$blocked）');
   ctx.out.writeln('策略：默认放行，可用 lzy_totp deny 关闭个别账号');
+  return ExitCode.ok;
+}
+
+/// serve：常驻的本机 MCP HTTP 服务（与 App 设置页里的开关等价）。
+///
+/// 只绑 127.0.0.1，地址带随机 token；token 与端口写在 settings.json 里，
+/// 重启后地址不变，粘贴到 agent 的配置长期有效。
+Future<int> _serve(CliContext ctx, ArgResults cmd) async {
+  final port = int.tryParse(cmd['port'] as String? ?? '') ?? 45763;
+  final server = McpHttpServer(
+    vault: ctx.vault,
+    audit: ctx.audit,
+    settings: ctx.settings,
+    defaultPort: port,
+  );
+
+  final McpHttpStatus status;
+  try {
+    status = await server.start();
+  } on StateError catch (e) {
+    ctx.err.writeln(e.message);
+    return ExitCode.usage;
+  }
+
+  // 打开设置里的「本机 MCP 服务」开关，保证 App 重启后同样会拉起
+  await ctx.settings.setMcpHttpEnabled(true);
+
+  final snippets = McpClientSnippets(status.url);
+  ctx.out.writeln('lzy_totp MCP 服务已启动（仅本机回环，Ctrl+C 停止）');
+  ctx.out.writeln('地址：${status.url}');
+  ctx.out.writeln(snippets.summary);
+  ctx.out.writeln('');
+  ctx.out.writeln('停止服务：Ctrl+C；同时记得在客户端删除配置（如 '
+      '${snippets.claudeCodeRemove}）。');
+  await ctx.out.flush();
+
+  // 等到 Ctrl+C
+  await ProcessSignal.sigint.watch().first;
+  await server.stop();
+  await ctx.settings.setMcpHttpEnabled(false);
+  ctx.out.writeln('已停止。');
   return ExitCode.ok;
 }
 

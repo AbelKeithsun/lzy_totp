@@ -447,7 +447,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('设置'), findsOneWidget);
-      expect(find.byType(SwitchListTile), findsOneWidget);
+      expect(find.byType(SwitchListTile), findsNWidgets(2));
 
       await unmount(tester);
     });

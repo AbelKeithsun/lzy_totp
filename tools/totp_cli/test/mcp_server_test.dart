@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:test/test.dart';
-import 'package:totp_cli/mcp_server.dart';
 import 'package:totp_core/totp_core.dart';
 
 /// 收集输出的 IOSink（便于断言 CLI/MCP 的文本输出）

@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 import 'package:totp_cli/cli.dart';
-import 'package:totp_cli/mcp_server.dart';
 import 'package:totp_core/totp_core.dart';
 
 import 'mcp_server_test.dart' show CaptureSink;

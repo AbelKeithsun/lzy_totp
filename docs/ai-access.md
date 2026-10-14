@@ -20,23 +20,28 @@ lzy_totp 除了给人用的 App，还对外暴露一个**给 AI agent 调用的�
 ## 架构
 
 ```
-┌─────────────────┐   MCP stdio (JSON-RPC 2.0)   ┌──────────────────────────┐
-│  AI agent        │ ───────────────────────────▶ │  lzy-totp mcp            │
-│  Claude Code /   │                              │  （7 个工具）             │
-│  Cursor / DSH …  │   shell 调用                 │                          │
-│                  │ ───────────────────────────▶ │  lzy-totp code <名称>     │
-└─────────────────┘                              └────────────┬─────────────┘
-                                                              │ 同一个内核
-                                                   ┌──────────▼─────────────┐
-                                                   │  packages/totp_core     │
-                                                   │  TOTP / 策略 / 审计      │
-                                                   └──────────┬─────────────┘
-                                                              │ AES-256-GCM
-                                                   ┌──────────▼─────────────┐
-                                                   │  ~/.config/lzy_totp     │
-                                                   │  vault.json / vault.key │
-                                                   │  audit.jsonl            │
-                                                   └────────────────────────┘
+  ① stdio（客户端按需拉起进程）
+┌─────────────────┐   newline-delimited JSON-RPC  ┌──────────────────────────┐
+│  AI agent        │ ────────────────────────────▶ │  lzy-totp mcp            │
+│  Claude Code /   │                               │  （7 个工具）            │
+│  Cursor / DSH …  │   ② HTTP（App 里常驻的服务）   │                          │
+│                  │ ────────────────────────────▶ │  App「MCP 服务」开关     │
+│                  │   POST /mcp/<token>           │  （同一份工具实现）      │
+│                  │   shell 调用                  │                          │
+│                  │ ────────────────────────────▶ │  lzy-totp code <名称>     │
+└─────────────────┘                               └────────────┬─────────────┘
+                                                               │ 同一个内核
+                                                    ┌──────────▼─────────────┐
+                                                    │  packages/totp_core     │
+                                                    │  TOTP / 策略 / 审计      │
+                                                    └──────────┬─────────────┘
+                                                               │ AES-256-GCM
+                                                    ┌──────────▼─────────────┐
+                                                    │  ~/.config/lzy_totp     │
+                                                    │  vault.json / vault.key │
+                                                    │  settings.json          │
+                                                    │  audit.jsonl            │
+                                                    └────────────────────────┘
 ```
 
 App（Android / macOS）的账号存在系统钥匙串，与这个 vault **互不影响**。
@@ -163,7 +168,54 @@ DSH 走 `@deepseek-ai/dsh-mcp-client`，工具以 `mcp__<serverName>__<tool>` �
 dsh web --patch /path/to/lzy-totp-mcp.cordis.yml
 ```
 
-## 接入方式二：CLI（无需 MCP）
+## 接入方式二：本机 HTTP 服务（在 App 里启停）
+
+不想让客户端去拉起子进程、或者想让「服务」有一个明确的开关，就用这个：
+**App 设置页 → MCP 服务 → 启动 MCP 服务**。服务由 App 在本机常驻，地址形如：
+
+```
+http://127.0.0.1:45763/mcp/<32 位随机 token>
+```
+
+启动后设置页会直接给出三种「粘贴即用」的配置，点一下就能复制：
+
+```text
+【Claude Code】
+claude mcp add --transport http lzy_totp http://127.0.0.1:45763/mcp/<token>
+
+【通用 JSON】（Cursor 等支持 HTTP 传输的客户端）
+{ "mcpServers": { "lzy_totp": { "url": "http://127.0.0.1:45763/mcp/<token>" } } }
+
+【DSH】追加到 $DSH_HOME/cordis.patch.yml
+- insert:
+    - id: lzy-totp-mcp-http
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: lzy_totp
+        transport: streamable-http
+        url: http://127.0.0.1:45763/mcp/<token>
+```
+
+**加与删就是配置的加减**：
+
+| 动作 | 怎么做 |
+|---|---|
+| 增加接入 | 复制上面的片段粘到 agent 配置里，重启客户端 |
+| 临时停用 | 关掉 App 里的开关（或 `lzy-totp serve` 按 Ctrl+C）——服务停止，客户端立刻连不上 |
+| 彻底移除 | 在客户端里删掉该 MCP 配置（如 `claude mcp remove lzy_totp`），再关掉开关 |
+
+**实现与安全**：传输是 MCP Streamable HTTP 的最小子集（`POST` 单个 JSON-RPC 消息 → 返回
+`application/json`；通知返回 202；不提供 SSE 流，`GET`/`DELETE` 返回 405）。三重防护：
+
+1. 只绑 `127.0.0.1`，并校验来源地址是回环；
+2. 地址里带 32 位随机 token（凭据），token 不匹配一律 404；
+3. 校验 `Host` 必须是回环地址（防 DNS rebinding），**并拒绝任何带 `Origin` 的请求**
+   （浏览器跨源请求才会带 Origin）——避免网页偷偷调用本机取码。
+
+token 与端口写在 `settings.json` 里，所以 App 重启后地址不变，粘贴过的配置长期有效。
+命令行等价物：`lzy-totp serve [--port N]`（会打印同样的片段）。
+
+## 接入方式三：CLI（无需 MCP）
 
 任何能执行 shell 的 agent（包括用 Bash 工具的编码 agent）都能这样取码：
 
@@ -238,7 +290,7 @@ App 侧：新增账号时**账户名必填**（带 `*` 标识），另有可选�
 | `vault.json` | 账户元数据 + **密文**密钥 | `600` |
 | `vault.key` | AES-256-GCM 密钥（32 字节 base64） | `600` |
 | `audit.jsonl` | 审计日志（JSONL，只追加） | `600` |
-| `settings.json` | AI / MCP 总开关（App 设置页写入，CLI / MCP 读取） | `600` |
+| `settings.json` | AI / MCP 总开关、HTTP 服务的 token 与端口（App 设置页写入，CLI / MCP 读取） | `600` |
 
 这个目录由 **CLI / MCP 与 App 共用**：App 的「同步给 AI」写的就是这里的 `vault.json`，
 写入用「临时文件 + rename」原子替换，因此 App 与 agent 同时读写也不会写坏文件。
@@ -247,7 +299,9 @@ App 侧：新增账号时**账户名必填**（带 `*` 标识），另有可选�
 
 ## 总开关：一键掐断 AI 取码
 
-App 的「设置 → AI / MCP 服务」里有一个总开关（默认开启）。关掉之后：
+设置页有两个开关，分工不同：**「启动 MCP 服务」**决定 `127.0.0.1` 上那个 HTTP 服务是否存在
+（不存在就没人能连）；**「允许 AI / MCP 取码」**是权限总闸，服务开着也能一刀切拒绝。
+下面是总闸（默认开启）关闭后的行为：
 
 | 通道 | 关闭后的行为 |
 |---|---|
@@ -332,8 +386,9 @@ $ lzy-totp code bank
 - **App 里的云图标是「授权开关」**：点一下账号就进了 vault，等于把它的第二因子交给 AI。
   好在它是可撤销的（同一位置再点一下即撤回），且不会覆盖已经 `deny` 的账号；
   但仍建议同步前想清楚哪些账号不该进 vault。
-- **不要开网络接口**。当前实现是纯 stdio / 本地进程，没有监听端口；如确需 HTTP 形态，
-  必须限定 `127.0.0.1` 并自行加认证，且走 VPN/mTLS。
+- **网络暴露面只有本机回环**：stdio 形态不监听任何端口；App 里的 HTTP 服务只绑
+  `127.0.0.1` 且地址带随机 token、拒绝跨源请求。**不要**把它改成 `0.0.0.0`
+  或反代到公网——那样等于把验证码接口开放出去。
 - **审计日志只追加不删除**，定期 `lzy-totp audit` 复查异常取码（尤其 `result=denied` 的密集出现，
   往往意味着有人在试探）。
 
@@ -358,7 +413,10 @@ $ lzy-totp code bank
 
 ## App 内的入口
 
-macOS / Android App 首页右上角的机器人图标（空列表时是「AI 接入说明」按钮）打开**AI 接入**页，
+App 首页右上角的 ⚙︎ 打开**设置**页：里面有「MCP 服务（本机 HTTP）」的启停开关，
+运行时直接给出可复制的三种客户端配置；下面还有「允许 AI / MCP 取码」总闸。
+
+首页右上角的机器人图标（空列表时是「AI 接入说明」按钮）打开**AI 接入**页，
 里面有三步接入说明、可直接复制的 MCP 配置 JSON 与 CLI 命令、7 个工具清单和安全提示。
 
 macOS 首页每个账号行尾还有云图标（见「从 App 一键同步账号」），长按或 ⋮ 菜单里也有同样一项。

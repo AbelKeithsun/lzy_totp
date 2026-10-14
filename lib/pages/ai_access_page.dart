@@ -142,8 +142,14 @@ class _Intro extends StatelessWidget {
               '（再点一下取消）。不必重新录一遍密钥。',
         ),
         _Bullet(
-          title: '总开关',
-          body: '「设置 → AI / MCP 服务」里可以一键关掉取码权限：关闭后 CLI 读取与 MCP '
+          title: 'App 内启停服务',
+          body: '「设置 → MCP 服务」里可以一键启动/停止一个只监听本机的 MCP 服务（HTTP），'
+              '并直接复制粘贴到 agent 的配置（Claude Code / 通用 JSON / DSH）。'
+              '关掉开关服务立即停止，客户端随即连不上。',
+        ),
+        _Bullet(
+          title: '取码总开关',
+          body: '设置页的「允许 AI / MCP 取码」是权限闸门：关闭后 CLI 读取与 MCP '
               '全部工具立即被拒绝（账号不受影响），列表顶部也会出现提示条。',
         ),
         const SizedBox(height: 12),

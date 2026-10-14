@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../models/account.dart';
 import '../services/ai_settings_service.dart';
 import '../services/ai_vault_service.dart';
+import '../services/mcp_service.dart';
 import '../services/storage_service.dart';
 import '../services/totp_service.dart';
 import '../utils/platform_utils.dart';
@@ -21,6 +22,7 @@ class AccountListPage extends StatefulWidget {
     required this.storage,
     this.aiVault,
     this.aiSettings,
+    this.mcpService,
   });
 
   final StorageService storage;
@@ -30,6 +32,9 @@ class AccountListPage extends StatefulWidget {
 
   /// AI / MCP 总开关的读写（默认连同一目录的 settings.json）
   final AiSettingsService? aiSettings;
+
+  /// 本机 MCP 服务宿主（设置页用）
+  final McpService? mcpService;
 
   @override
   State<AccountListPage> createState() => _AccountListPageState();
@@ -335,7 +340,11 @@ class _AccountListPageState extends State<AccountListPage> {
   Future<void> _openSettings() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => SettingsPage(aiSettings: _aiSettings, aiVault: _aiVault),
+        builder: (_) => SettingsPage(
+          aiSettings: _aiSettings,
+          aiVault: _aiVault,
+          mcpService: widget.mcpService ?? McpService(settings: _aiSettings),
+        ),
       ),
     );
     // 回来时刷新总开关状态（可能刚被关掉）

@@ -19,4 +19,10 @@ class AiSettingsService {
 
   Future<void> setAiAccessEnabled(bool value) =>
       _store.setAiAccessEnabled(value);
+
+  /// 是否让 App 启动本机 MCP 服务（HTTP）
+  Future<bool> mcpHttpEnabled() async => (await _store.load()).mcpHttpEnabled;
+
+  Future<void> setMcpHttpEnabled(bool value) =>
+      _store.setMcpHttpEnabled(value);
 }

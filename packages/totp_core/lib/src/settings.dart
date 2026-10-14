@@ -9,7 +9,12 @@ import 'paths.dart';
 /// 目前只有一项：AI / MCP 取码总开关。放在数据目录而不是系统钥匙串里，
 /// 是为了让 CLI 与 MCP（无 GUI、可能是 AI 子进程）也能读到它。
 class TotpSettings {
-  const TotpSettings({this.aiAccessEnabled = true});
+  const TotpSettings({
+    this.aiAccessEnabled = true,
+    this.mcpHttpEnabled = false,
+    this.mcpHttpToken = '',
+    this.mcpHttpPort = 0,
+  });
 
   /// AI / MCP 取码总开关。
   ///
@@ -17,19 +22,45 @@ class TotpSettings {
   /// 但不会删除 vault 里的任何账号。默认 `true`（保持既有行为）。
   final bool aiAccessEnabled;
 
+  /// 是否让 App 启动本机 MCP 服务（HTTP，仅回环）。
+  ///
+  /// 默认关闭：不开监听是更安全的默认值，需要时在 App 设置页一键启动。
+  final bool mcpHttpEnabled;
+
+  /// 服务地址里的随机 token（持久化，保证粘贴给 agent 的配置重启后依然有效）
+  final String mcpHttpToken;
+
+  /// 上次实际监听的端口（持久化，尽量让地址保持稳定）
+  final int mcpHttpPort;
+
   static const TotpSettings enabled = TotpSettings();
 
   Map<String, dynamic> toJson() => {
         'version': 1,
         'aiAccessEnabled': aiAccessEnabled,
+        'mcpHttpEnabled': mcpHttpEnabled,
+        'mcpHttpToken': mcpHttpToken,
+        'mcpHttpPort': mcpHttpPort,
       };
 
   factory TotpSettings.fromJson(Map<String, dynamic> json) => TotpSettings(
         aiAccessEnabled: json['aiAccessEnabled'] as bool? ?? true,
+        mcpHttpEnabled: json['mcpHttpEnabled'] as bool? ?? false,
+        mcpHttpToken: json['mcpHttpToken'] as String? ?? '',
+        mcpHttpPort: json['mcpHttpPort'] as int? ?? 0,
       );
 
-  TotpSettings copyWith({bool? aiAccessEnabled}) => TotpSettings(
+  TotpSettings copyWith({
+    bool? aiAccessEnabled,
+    bool? mcpHttpEnabled,
+    String? mcpHttpToken,
+    int? mcpHttpPort,
+  }) =>
+      TotpSettings(
         aiAccessEnabled: aiAccessEnabled ?? this.aiAccessEnabled,
+        mcpHttpEnabled: mcpHttpEnabled ?? this.mcpHttpEnabled,
+        mcpHttpToken: mcpHttpToken ?? this.mcpHttpToken,
+        mcpHttpPort: mcpHttpPort ?? this.mcpHttpPort,
       );
 }
 
@@ -62,10 +93,19 @@ class SettingsStore {
     await restrictFilePermissions(paths.settingsFile);
   }
 
-  /// 只改总开关（读改写，避免覆盖将来新增的字段）
-  Future<TotpSettings> setAiAccessEnabled(bool enabled) async {
-    final next = (await load()).copyWith(aiAccessEnabled: enabled);
+  /// 读改写（避免覆盖其它字段）
+  Future<TotpSettings> update(
+      TotpSettings Function(TotpSettings current) mutate) async {
+    final next = mutate(await load());
     await save(next);
     return next;
   }
+
+  /// 只改 AI 取码总开关
+  Future<TotpSettings> setAiAccessEnabled(bool enabled) =>
+      update((current) => current.copyWith(aiAccessEnabled: enabled));
+
+  /// 只改「本机 MCP 服务」开关
+  Future<TotpSettings> setMcpHttpEnabled(bool enabled) =>
+      update((current) => current.copyWith(mcpHttpEnabled: enabled));
 }
