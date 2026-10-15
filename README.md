@@ -331,8 +331,12 @@ Developer ID 证书 + 公证流程。
 ### 关于「lzy_totp 想使用您钥匙串中的机密信息」弹窗
 
 App 的账号存在系统钥匙串（`flutter_secure_storage_service` / `totp_accounts_v1`）。
-**每次重新构建/升级后，第一次打开可能弹一次授权，点「允许」即可；同一版本再打开不会再弹**
-（钥匙串按代码身份记住授权）。
+**重新构建/升级后（cdhash 变了）第一次打开会弹一次授权，点「允许」即可；同一版本反复打开不会再弹**
+——后半句已实测（2026-10-15：同一构建连续启动 3 次，`log show` 记录 0 次弹窗）。
+
+⚠️ 但有一个**实测到的例外**：非 Apple 签名的 App，macOS 的 XARA 授权并不稳定，
+出现过同一进程在同一会话里被二次询问（日志：`ACL partition mismatch: client cdhash:…` →
+`displaying keychain prompt` ——同 cdhash 已批准过仍再问）。这种情况点一下即可，不是每次都发生。
 
 原因（已用 `log show` 逐条核对）：Flutter 默认 **ad-hoc 签名**，其代码身份就是 cdhash，
 每次构建都会变。钥匙串条目有两道门：
@@ -343,6 +347,11 @@ App 的账号存在系统钥匙串（`flutter_secure_storage_service` / `totp_ac
 | 分区列表 / XARA（分区是否匹配） | 客户端的分区 ID | 非 Apple 签发证书的客户端，分区 ID **仍然是它的 cdhash**，会变 |
 
 所以「重建一次、弹一次」是 ad-hoc 签名的固有行为。
+
+**2026-10-15 一天的实测统计**（`log show` 逐条数）：12 次弹窗 = App 4 次（3 次对应 3 次重新
+构建/安装，1 次是上述 XARA 二次询问）+ **`/usr/bin/codesign` 8 次**。后者是自签名流程带来的
+额外开销：`codesign` 每次签名都要取签名私钥，于是每次构建再弹 4~8 次——**自签名在这里是负收益**，
+所以 `upgrade_local.sh` 现在默认不重签（要重签显式加 `--sign`）。
 
 **实测过的结论**：本仓库提供 `tool/macos/sign_local.sh`，用一张本机自签名证书重新签名，
 可以让第一条门变成稳定的 `identifier + certificate root`（不再含 cdhash），
@@ -375,16 +384,25 @@ App 的账号存在系统钥匙串（`flutter_secure_storage_service` / `totp_ac
 > CLI / MCP（AI 侧）不碰钥匙串，所以 **AI 取码永远不会触发这个弹窗**：
 > 它只读 `~/.config/lzy_totp/vault.json` 与 `vault.key` 两个普通文件。
 
-#### 本项目的取舍（已定）
+#### 本项目的取舍（2026-10-15 更新）
 
-**接受「每次升级点一次允许」**，不引入 Apple 证书（本机没有 Apple ID 登录，
-不想为此注册/付费）。因此每次升级后第一次打开点一下即可，其余时间不受影响。
+**默认不再重签**（`upgrade_local.sh` 默认走构建产物的 ad-hoc 签名）：自签名证书既消不掉
+per-cdhash 弹窗，又让 `codesign` 每次构建多弹 4~8 次，纯负收益。
 
-升级用一条命令（构建 → 签名 → 停旧版 → 安装到 /Applications → 启动）：
+剩下的弹窗频率就是「**重新构建一次 → 第一次打开弹一次**」，不构建就不会弹。
+
+如果连这一次也不想点，两条路（按推荐度）：
+
+| 方案 | 效果 | 代价 |
+|---|---|---|
+| **A. Apple ID 签发的 Apple Development 证书**（免费账号即可） | 团队 ID 稳定 → 弹窗彻底消失 | 需要登录 Apple ID 并生成证书（见上一节步骤） |
+| **B. App 不再用钥匙串**（账号也放进加密 vault） | 弹窗彻底消失 | 密钥保护从钥匙串托管降级为「AES-256-GCM + 600 权限的 key 文件」，**降低**静态保护 |
+
+升级用一条命令（构建 → 停旧版 → 安装到 /Applications → 启动）：
 
 ```bash
-tool/macos/upgrade_local.sh              # 完整流程
-tool/macos/upgrade_local.sh --no-sign    # 不重签，保持 ad-hoc
+tool/macos/upgrade_local.sh              # 完整流程（默认 ad-hoc，不弹 codesign 授权）
+tool/macos/upgrade_local.sh --sign       # 需要时用本机证书重签（会有 codesign 弹窗）
 tool/macos/upgrade_local.sh --no-build   # 只用现有产物做安装
 ```
 
