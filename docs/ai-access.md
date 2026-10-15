@@ -215,12 +215,18 @@ claude mcp add --transport http lzy_totp http://127.0.0.1:45763/mcp/<token>
 token 与端口写在 `settings.json` 里，所以 App 重启后地址不变，粘贴过的配置长期有效。
 命令行等价物：`lzy-totp serve [--port N]`（会打印同样的片段）。
 
-## 接入方式三：CLI（无需 MCP）
+## 接入方式三：CLI（无需 MCP，也不占后台）
 
-任何能执行 shell 的 agent（包括用 Bash 工具的编码 agent）都能这样取码：
+任何能执行 shell 的 agent（包括用 Bash 工具的编码 agent）都能这样取码——**跑完即退**，
+没有常驻进程、不监听端口，和 `curl` 一样：
+
+```bash
+tool/install_cli.sh      # 装到 ~/.local/bin/lzy-totp（AOT 二进制，约 6.4 MB）
+```
 
 ```bash
 lzy-totp list                 # 先看有哪些账号可用
+lzy-totp code                 # vault 只有一个账号时，名称可省略
 lzy-totp code github          # 输出裸验证码，便于直接填进表单
 lzy-totp code github --json   # 结构化输出，带剩余秒数
 ```

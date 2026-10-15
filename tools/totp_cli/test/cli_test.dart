@@ -53,6 +53,34 @@ void main() {
     return code;
   }
 
+  group('一条命令取码（code 可省略名称）', () {
+    test('vault 只有一个账号时，lzy-totp code 直接出码', () async {
+      await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP']);
+      expect(await run(['code']), ExitCode.ok);
+      expect(out.text.trim(), hasLength(6));
+    });
+
+    test('多个账号时要求指定名称，并列出可选账号', () async {
+      await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP']);
+      await run(['add', 'gitlab', '--secret', 'GEZDGNBVGY3TQOJQ']);
+      expect(await run(['code']), ExitCode.usage);
+      expect(err.text, contains('请指定名称'));
+      expect(err.text, contains('github'));
+      expect(err.text, contains('gitlab'));
+    });
+
+    test('vault 为空时提示先录入', () async {
+      expect(await run(['code']), ExitCode.notFound);
+      expect(err.text, contains('vault 为空'));
+    });
+
+    test('doctor 会打印可执行文件信息（确认装的是哪一份）', () async {
+      await run(['doctor']);
+      expect(out.text, contains('可执行文件'));
+      expect(out.text, contains('不占后台'));
+    });
+  });
+
   group('CLI 账户备注', () {
     test('add --note 写入备注，list / info 都能看到', () async {
       expect(

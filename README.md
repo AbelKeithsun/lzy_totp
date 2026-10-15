@@ -104,7 +104,9 @@ tools/totp_cli/                   # 命令行 + MCP server
   lib/mcp_server.dart             # MCP stdio server（7 个工具）
 docs/ai-access.md                 # AI agent 接入指南：架构、快速开始、客户端配置、安全边界、排错
 docs/images/                      # 界面截图（由 tool/screenshots 生成）
+tool/install_cli.sh               # 把 CLI 装成一次性命令（编译 + 自检 + PATH 检查）
 tool/screenshots/capture_test.dart # 截图生成器（不在 test/ 下，flutter test 不会自动跑）
+tool/macos/upgrade_local.sh       # 本地升级 macOS App（构建→签名→安装→启动）
 test/totp_test.dart               # RFC 6238 向量 + URI 解析 + 序列化测试
 test/widget_test.dart             # 启动冒烟测试
 test/account_list_test.dart       # 账户删除（菜单 / 长按 / 左滑 + 确认 + 撤销）
@@ -112,6 +114,33 @@ test/add_account_page_test.dart   # 账户名必填、备注、编辑模式（�
 test/ai_access_page_test.dart     # AI 接入页内容与复制
 test/ai_vault_service_test.dart   # App→vault 同步：加密落盘、权限、不覆盖 deny、审计
 ```
+
+## 三种使用形态（按要不要后台占用选）
+
+| 形态 | 怎么用 | 后台占用 |
+|---|---|---|
+| **一次性 CLI**（日常推荐） | `lzy-totp code <名称>` | **无**：约 45～95 ms 跑完即退，无常驻进程、不监听端口 |
+| stdio MCP | 客户端配置里写 `lzy-totp mcp` | **无**：客户端按需拉起子进程，用完退出 |
+| 本机 HTTP MCP 服务 | App 设置页开关，或 `lzy-totp serve` | **有**：常驻监听 `127.0.0.1`，可被多个客户端共享 |
+
+### 安装成命令行工具（像 curl 那样用）
+
+```bash
+tool/install_cli.sh                          # 编译并装到 ~/.local/bin/lzy-totp
+tool/install_cli.sh --prefix /usr/local/bin  # 换安装目录
+```
+
+脚本会编译 AOT 原生二进制（约 6.4 MB）、自检（数据目录/权限/账号数/可执行文件构建时间），
+并检查 `~/.local/bin` 是否在 PATH 中。
+
+```bash
+lzy-totp code              # vault 只有一个账号时，名称可省略
+lzy-totp code github       # 指定账号
+lzy-totp code github --json
+lzy-totp list / info / audit / doctor
+```
+
+它直接读 `~/.config/lzy_totp` 的加密 vault，**不依赖 App 运行**，也不需要任何服务在后台。
 
 ## 让 AI agent 接入 lzy_totp
 

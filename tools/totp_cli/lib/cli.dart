@@ -169,7 +169,7 @@ lzy_totp —— 一次性验证码（TOTP）命令行 / MCP 入口
 命令：
   list                 列出账号（含是否允许 AI 取码）
   info <名称>          查看账号元数据（绝不返回密钥）
-  code <名称>          输出当前验证码
+  code [名称]          输出当前验证码（vault 只有一个账号时可省略名称）
   add <名称>           添加账号（--secret <Base32> 或 --uri <otpauth://...>）
                        <名称> 即账户名，始终保留；--issuer 发行方、--note 备注
   remove <名称>        删除账号
@@ -259,10 +259,38 @@ Future<int> _info(CliContext ctx, ArgResults cmd) async {
 }
 
 Future<int> _code(CliContext ctx, ArgResults cmd) async {
-  final query = _firstArg(cmd);
+  // 总开关关闭时：
+  // - 非交互（AI 子进程 / 管道）直接拒绝，连账号列表都不读；
+  // - 交互终端仍然走下面的人工应急通道（提示确认后放行）。
+  final switchOff =
+      AiAccessPolicy.globalSwitchDenial(await ctx.settings.load());
+  if (switchOff != null && !ctx.stdinIsTerminal) {
+    await ctx.audit.append(AuditEntry(
+      action: 'generate_totp',
+      result: 'denied',
+      actor: 'cli',
+      note: 'global_disabled',
+    ));
+    ctx.err.writeln(switchOff);
+    return ExitCode.denied;
+  }
+
+  var query = _firstArg(cmd);
   if (query == null) {
-    ctx.err.writeln('用法：lzy_totp code <名称>');
-    return ExitCode.usage;
+    // 没写名字：vault 里只有一个账号时直接用它，省掉一次 list + 复制名字
+    final accounts = await ctx.vault.load();
+    if (accounts.length == 1) {
+      query = accounts.single.displayTitle;
+    } else if (accounts.isEmpty) {
+      ctx.err.writeln('vault 为空。先录入：lzy_totp add <名称> --secret <Base32>');
+      return ExitCode.notFound;
+    } else {
+      ctx.err.writeln('vault 里有 ${accounts.length} 个账号，请指定名称：');
+      for (final a in accounts) {
+        ctx.err.writeln('  ${a.displayTitle}');
+      }
+      return ExitCode.usage;
+    }
   }
   final result = await _resolve(ctx, query);
   if (result.exitCode != null) return result.exitCode!;
@@ -573,6 +601,18 @@ Future<int> _doctor(CliContext ctx) async {
   }
   ctx.out.writeln('账号数：${accounts.length}（其中禁止 AI 取码：$blocked）');
   ctx.out.writeln('策略：默认放行，可用 lzy_totp deny 关闭个别账号');
+
+  // 可执行文件信息：确认「我装的是哪一份、什么时候编的」
+  try {
+    final exe = File(Platform.resolvedExecutable);
+    final stat = await exe.stat();
+    final size = (stat.size / 1024 / 1024).toStringAsFixed(1);
+    ctx.out.writeln('可执行文件：${exe.path}');
+    ctx.out.writeln('  构建时间：${stat.modified.toLocal().toString().split('.').first}'
+        '（$size MB，运行时不占后台）');
+  } catch (_) {
+    // 拿不到自身路径不影响自检
+  }
   return ExitCode.ok;
 }
 
