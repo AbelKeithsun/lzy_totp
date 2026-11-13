@@ -362,12 +362,35 @@ App 的账号存在系统钥匙串（`flutter_secure_storage_service` / `totp_ac
 1. **用 Apple 签发的证书签名**（免费 Apple ID 即可，不必买 $99/年）：
    客户端身份变成 `teamid:<TEAMID>` 且稳定，两道门都不再随构建变化，弹窗彻底消失。
 
-   ```text
-   Xcode → Settings → Accounts → + 用 Apple ID 登录（免费账号，会给一个 Personal Team）
-   Xcode → Settings → Accounts → Manage Certificates… → + → Apple Development
-   然后：tool/macos/sign_local.sh build/macos/Build/Products/Release/lzy_totp.app
-   （脚本会自动选中 Apple Development 身份；若仍选到自签名会打印警告）
+   **操作步骤（Xcode 26.x 实测路径，全程不用打开项目）**
+
+   1. 打开 **Xcode** → 菜单 **Xcode ▸ Settings…**（快捷键 `⌘,`）。
+   2. 选 **Accounts** 标签 → 点左下角 **`+`** → 选 **Apple ID** → **Continue**。
+   3. 输入你的 Apple ID 邮箱与密码（国内账号可用），再输双重认证验证码。
+      免登录成功后，账号列表里会出现你的 Apple ID，下面标着 **Personal Team（个人团队）**——
+      免费账号就有，不需要加入 $99 的开发者计划。
+   4. 保持选中你的账号，点右下角 **Manage Certificates…** → 在弹出窗口点左下角 **`+`**
+      → 选 **Apple Development** → 等几秒，证书生成并自动装入登录钥匙串 → **Done**。
+   5. 关掉 Settings 窗口即可（不需要新建/打开任何 Xcode 项目）。
+
+   **验证**：终端执行
+
+   ```bash
+   security find-identity -v -p codesigning
+   # 期望看到类似：1) H"..." "Apple Development: <你的名字> (<TEAMID>)"
    ```
+
+   看到 `Apple Development: … (TEAMID)` 后，跑一次升级即可自动切换签名（脚本里
+   `DO_SIGN=auto` 会检测到 Apple 身份并自动用它，不需要额外参数）：
+
+   ```bash
+   tool/macos/upgrade_local.sh
+   ```
+
+   - 首次签名时可能弹「codesign 想使用钥匙串中的密钥」，点 **始终允许**（只需一次）；
+   - 切换身份后 App 第一次读账号会**再弹一次**授权（新身份要重新批准一次），之后不再弹；
+   - 若第 4 步报 `Failed to create a certificate`，通常是 Apple ID 还没接受开发者协议：
+     到 [developer.apple.com](https://developer.apple.com) 用同一账号登录并同意协议，再重试第 4 步。
 
    - **为什么免费账号够**：macOS App 只有在使用需要授权的 entitlement（沙盒、
      keychain-access-groups、iCloud、推送等）时才需要 provisioning profile。
@@ -386,8 +409,9 @@ App 的账号存在系统钥匙串（`flutter_secure_storage_service` / `totp_ac
 
 #### 本项目的取舍（2026-10-15 更新）
 
-**默认不再重签**（`upgrade_local.sh` 默认走构建产物的 ad-hoc 签名）：自签名证书既消不掉
-per-cdhash 弹窗，又让 `codesign` 每次构建多弹 4~8 次，纯负收益。
+**默认 `DO_SIGN=auto`**：钥匙串里有 Apple 签发身份就自动用它重签（团队 ID 稳定 → 弹窗消失），
+没有就跳过重签、保持 ad-hoc。**不再默认使用本机自签名**——它既消不掉 per-cdhash 弹窗，
+又让 `codesign` 每次构建多弹 4~8 次，纯负收益（`--sign` 仍可强制用，`--no-sign` 强制不用）。
 
 剩下的弹窗频率就是「**重新构建一次 → 第一次打开弹一次**」，不构建就不会弹。
 

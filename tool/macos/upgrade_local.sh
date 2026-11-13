@@ -3,10 +3,15 @@
 # 本地升级：构建 →（默认不重签）→ 停掉旧版 → 安装到 /Applications → 启动。
 #
 # 用法：
-#   tool/macos/upgrade_local.sh              # 完整流程（默认沿用构建产物的 ad-hoc 签名）
-#   tool/macos/upgrade_local.sh --sign       # 额外用本机证书重签（有 Apple 证书时才有意义）
+#   tool/macos/upgrade_local.sh              # 完整流程；签名=auto（有 Apple 签发身份就自动签）
+#   tool/macos/upgrade_local.sh --sign       # 强制重签（没有 Apple 身份时会退回本机自签名）
+#   tool/macos/upgrade_local.sh --no-sign    # 强制不重签（保持 ad-hoc）
 #   tool/macos/upgrade_local.sh --no-build   # 用现有构建产物，只做安装
 #   tool/macos/upgrade_local.sh --no-launch  # 装完不自动打开
+#
+# 签名策略 auto（推荐）：
+#   · 钥匙串里有 Apple Development / Developer ID 身份 → 用它重签（团队 ID 稳定，弹窗消失）；
+#   · 没有 → 跳过重签，保持 ad-hoc（不碰本机自签名，避免 codesign 取私钥的额外弹窗）。
 #
 # 为什么默认不重签（2026-10-15 实测）：
 #   用本机**自签名证书**重签不但减少不了 App 读钥匙串的授权弹窗（分区仍按 cdhash 判定，
@@ -23,13 +28,14 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 DO_BUILD=1
-DO_SIGN=0          # 默认不重签：自签名只会额外触发 codesign 取私钥的钥匙串弹窗
+DO_SIGN=auto       # auto=有 Apple 签发身份才重签；1=强制签；0=不签
 DO_LAUNCH=1
 for arg in "$@"; do
   case "$arg" in
     --no-build) DO_BUILD=0 ;;
     --sign) DO_SIGN=1 ;;
     --no-sign) DO_SIGN=0 ;;
+    --sign) DO_SIGN=1 ;;
     --no-launch) DO_LAUNCH=0 ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "未知参数：$arg（用 --help 看用法）" >&2; exit 2 ;;
@@ -50,10 +56,22 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
+if [[ "$DO_SIGN" == "auto" ]]; then
+  if security find-identity -v -p codesigning 2>/dev/null \
+      | grep -qE 'Apple Development|Developer ID Application'; then
+    echo "▶ 检测到 Apple 签发身份 → 自动重签（团队 ID 稳定，升级后不再弹钥匙串）"
+    DO_SIGN=1
+  else
+    echo "▶ 未检测到 Apple 签发身份 → 跳过重签，保持 ad-hoc（本机自签名不再默认使用）"
+    echo "  · 自签名既消不掉弹窗，还会让 codesign 每次取私钥多弹几次"
+    echo "  · 想彻底免弹窗：Xcode ▸ Settings ▸ Accounts 用免费 Apple ID 登录，"
+    echo "    再 Manage Certificates ▸ + ▸ Apple Development（步骤见 README）"
+    DO_SIGN=0
+  fi
+fi
+
 if [[ "$DO_SIGN" == "1" ]]; then
   echo "▶ 重新签名（有 Apple 证书会自动用它，否则用本机自签名）"
-  echo "  注意：自签名会让 codesign 每次取签名私钥都弹钥匙串授权；"
-  echo "  若只是为了本地自用，建议不加 --sign（ad-hoc 签名同样能跑）。"
   "$REPO_ROOT/tool/macos/sign_local.sh" "$APP" || {
     rc=$?
     [[ $rc -eq 2 ]] || exit $rc
