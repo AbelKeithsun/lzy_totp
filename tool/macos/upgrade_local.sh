@@ -97,7 +97,7 @@ codesign --verify --deep --strict "$INSTALLED" >/dev/null 2>&1 && VERIFY="签名
 if [[ "${TEAM:-not set}" == "not set" ]]; then VERIFY="${VERIFY}（非 Apple 签发，系统不信任它，Gatekeeper 行为与 ad-hoc 一致）"; fi
 
 if [[ "${TEAM:-not set}" != "not set" ]]; then
-  PROMPT_NOTE="✅ 已用 Apple 证书签名（TeamIdentifier=\${TEAM}）：钥匙串分区走 teamid，
+  PROMPT_NOTE="✅ 已用 Apple 证书签名（TeamIdentifier=${TEAM}）：钥匙串分区走 teamid，
    重新构建/升级后**不会再弹**授权（2026-11-13 实测：重建后启动 0 次弹窗）。"
 else
   PROMPT_NOTE="ℹ️  当前是 ad-hoc 签名：重新构建（新 cdhash）后第一次打开会弹一次授权，
@@ -107,11 +107,11 @@ else
 fi
 
 cat <<EOF
-✅ 已安装 lzy_totp \$VERSION
+✅ 已安装 lzy_totp $VERSION
    签名：${AUTHORITY:-未知}（TeamIdentifier=${TEAM:-not set}，${VERIFY}）
-   位置：\$INSTALLED
+   位置：$INSTALLED
 
-\${PROMPT_NOTE}
+${PROMPT_NOTE}
 EOF
 
 if [[ "$DO_LAUNCH" == "1" ]]; then
