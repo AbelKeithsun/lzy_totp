@@ -83,5 +83,5 @@ if [[ -z "$TEAM" || "$TEAM" == "not set" ]]; then
     然后重新运行本脚本（会自动选中 Apple Development 身份）。
 WARN
 else
-  echo "✅ 已带 TeamIdentifier=$TEAM：钥匙串分区走 teamid，重建后不会再弹授权。"
+  echo "✅ 已带 TeamIdentifier=${TEAM}：钥匙串分区走 teamid，重建后不会再弹授权。"
 fi

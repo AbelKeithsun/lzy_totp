@@ -38,7 +38,7 @@ for arg in "$@"; do
     --sign) DO_SIGN=1 ;;
     --no-launch) DO_LAUNCH=0 ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
-    *) echo "未知参数：$arg（用 --help 看用法）" >&2; exit 2 ;;
+    *) echo "未知参数：${arg}（用 --help 看用法）" >&2; exit 2 ;;
   esac
 done
 
@@ -52,7 +52,7 @@ if [[ "$DO_BUILD" == "1" ]]; then
 fi
 
 if [[ ! -d "$APP" ]]; then
-  echo "找不到构建产物：$APP（先去掉 --no-build 跑一次）" >&2
+  echo "找不到构建产物：${APP}（先去掉 --no-build 跑一次）" >&2
   exit 1
 fi
 
@@ -96,17 +96,22 @@ AUTHORITY="$(codesign -dvv "$INSTALLED" 2>&1 | sed -n 's/^Authority=//p' | head 
 codesign --verify --deep --strict "$INSTALLED" >/dev/null 2>&1 && VERIFY="签名完整" || VERIFY="签名校验未通过"
 if [[ "${TEAM:-not set}" == "not set" ]]; then VERIFY="${VERIFY}（非 Apple 签发，系统不信任它，Gatekeeper 行为与 ad-hoc 一致）"; fi
 
-cat <<EOF
-✅ 已安装 lzy_totp $VERSION
-   签名：${AUTHORITY:-未知}（TeamIdentifier=${TEAM:-not set}，${VERIFY}）
-   位置：$INSTALLED
+if [[ "${TEAM:-not set}" != "not set" ]]; then
+  PROMPT_NOTE="✅ 已用 Apple 证书签名（TeamIdentifier=\${TEAM}）：钥匙串分区走 teamid，
+   重新构建/升级后**不会再弹**授权（2026-11-13 实测：重建后启动 0 次弹窗）。"
+else
+  PROMPT_NOTE="ℹ️  当前是 ad-hoc 签名：重新构建（新 cdhash）后第一次打开会弹一次授权，
+   点「允许」即可；同一版本重复打开不弹。想彻底免弹窗：用免费 Apple ID 生成
+   Apple Development 证书（见 README「用 Apple ID 生成证书」一节）。
+   AI 侧（lzy-totp CLI / MCP）不读钥匙串，永远不会有这个弹窗。"
+fi
 
-ℹ️  钥匙串弹窗（实测口径，2026-10-15）：
-   · 只有**重新构建过**（新 cdhash）后的第一次打开会弹一次；同一版本重复打开不弹；
-   · 非 Apple 签名的 App，macOS 的 XARA 授权并不稳定，偶尔会在同一会话里再问一次；
-   · 想让弹窗彻底消失，两条路：① 用 Apple ID 签发的 Apple Development 证书（团队 ID 稳定，
-     免费账号即可）；② 让 App 不用钥匙串（改用加密文件，见 README 里的取舍说明）。
-   AI 侧（lzy-totp CLI / MCP）不读钥匙串，永远不会有这个弹窗。
+cat <<EOF
+✅ 已安装 lzy_totp \$VERSION
+   签名：${AUTHORITY:-未知}（TeamIdentifier=${TEAM:-not set}，${VERIFY}）
+   位置：\$INSTALLED
+
+\${PROMPT_NOTE}
 EOF
 
 if [[ "$DO_LAUNCH" == "1" ]]; then

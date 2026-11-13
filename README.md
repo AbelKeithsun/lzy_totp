@@ -12,6 +12,11 @@ Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authentica
   另有可选的发行方与备注（如「生产环境 / 测试环境」）；扫码得到的二维码若没带名称，会要求补全后再入库
 - **编辑已有账号**：⋮ 菜单 / 长按 →「编辑账户」，可补账户名、发行方、备注，或修正密钥；
   保存后保留原 id 与 AI 权限；若该账号已同步给 AI，vault 里的条目也会同步更新
+- **恢复码（备用码）**：录入时可一并填「恢复码」（每行一个），随密钥**同样加密**保存；
+  ⋮ 菜单 / 长按 →「恢复码」可查看、点一下复制、用掉一个就「标记已用」（划掉）、录错可删除；
+  命令行侧 `lzy_totp add --recovery` 录入、`lzy_totp recovery <名称>` 查看
+  —— 恢复码能绕过 TOTP 直接登录，因此**不经任何 MCP 工具暴露给 AI**，
+  CLI 侧也只允许人工在交互终端里看（非交互调用一律拒绝并记审计）
 - **TOTP 计算**：RFC 6238，测试向量全覆盖（SHA1/SHA256/SHA512）
 - **加密存储**：密钥经 flutter_secure_storage 加密落盘
   - Android：AES-GCM + RSA 密钥包裹（密钥由 Android Keystore 保管）
@@ -86,11 +91,12 @@ lib/                              # Flutter App（Android + macOS）
   pages/settings_page.dart        # 设置页：MCP 服务启停 + 粘贴即用配置 + 取码总开关
   services/mcp_service.dart       # App 内的 MCP 服务宿主（按设置启停本机 HTTP 服务）
   pages/scan_page.dart            # 扫码页
-  pages/add_account_page.dart     # 手动添加页
+  pages/add_account_page.dart     # 手动添加页（含恢复码录入）
+  pages/recovery_codes_sheet.dart # 恢复码面板（查看 / 复制 / 标记已用 / 删除）
 packages/totp_core/               # 共享内核（纯 Dart，App / CLI / MCP 共用）
   lib/src/totp.dart               # TOTP 计算（RFC 6238）
-  lib/src/account.dart            # 账户模型 + otpauth:// 解析 + aiAllowed 标记
-  lib/src/vault.dart              # AES-256-GCM 加密 vault
+  lib/src/account.dart            # 账户模型 + otpauth:// 解析 + aiAllowed 标记 + 恢复码
+  lib/src/vault.dart              # AES-256-GCM 加密 vault（密钥与恢复码都加密）
   lib/src/policy.dart             # AI 访问策略（默认放行 + deny 黑名单）
   lib/src/settings.dart           # 本地设置（总开关、HTTP token/端口，App 与 CLI 共用）
   lib/src/mcp/mcp_server.dart     # MCP 协议与 7 个工具（stdio 传输，客户端按需拉起）
@@ -137,6 +143,7 @@ tool/install_cli.sh --prefix /usr/local/bin  # 换安装目录
 lzy-totp code              # vault 只有一个账号时，名称可省略
 lzy-totp code github       # 指定账号
 lzy-totp code github --json
+lzy-totp recovery github   # 查看恢复码（仅限人工在交互终端执行）
 lzy-totp list / info / audit / doctor
 ```
 
@@ -199,6 +206,11 @@ CLI 读取与 MCP 全部工具都会被拒绝并记审计，账号照旧保存�
 核心安全设计：**只返回一次性验证码，永不返回密钥**；默认放行、可用 `deny` 把个别账号（银行、主邮箱等）
 排除在 AI 之外；每次取码（含被拒绝的）都写审计日志。App 的账号存在系统钥匙串，
 与 AI 读取的 vault 相互独立，同步是显式的一步操作。
+
+**恢复码（备用码）同样不给 AI**：它能绕过 TOTP 直接登录，敏感度高于验证码本身。
+MCP 的 7 个工具一个都不返回恢复码；CLI 的 `lzy-totp recovery <名称>` 只在交互终端里可用，
+AI 子进程（非 TTY）调用一律拒绝并记审计。恢复码在 App 侧录入（手动添加页 / 恢复码面板），
+在 vault 里也是逐条加密存储的。
 
 ## 构建
 
@@ -392,6 +404,45 @@ App 的账号存在系统钥匙串（`flutter_secure_storage_service` / `totp_ac
    - 若第 4 步报 `Failed to create a certificate`，通常是 Apple ID 还没接受开发者协议：
      到 [developer.apple.com](https://developer.apple.com) 用同一账号登录并同意协议，再重试第 4 步。
 
+   #### 装完证书后还有两步（2026-11-13 本机实测，缺一个都不算完）
+
+   **① 补 WWDR G3 中间证书**——Apple Development 证书由 `Apple Worldwide Developer Relations
+   Certification Authority (G3)` 签发，而这台机器上只有两张 **2023 年就过期**的旧 WWDR CA，
+   结果是证书在但身份不可用：
+
+   ```text
+   security find-identity -v -p codesigning   → 0 valid identities
+   codesign --sign "Apple Development: …"     → Warning: unable to build chain to self-signed root
+                                               → errSecInternalComponent
+   ```
+
+   Apple 官网对脚本请求返回 403，用 MacPorts 镜像取这份公开的中间证书：
+
+   ```bash
+   curl -L -o /tmp/AppleWWDRCAG3.cer \
+     https://mirrors.tuna.tsinghua.edu.cn/macports/distfiles/apple-pki-bundle/AppleWWDRCAG3.cer
+   security import /tmp/AppleWWDRCAG3.cer -k ~/Library/Keychains/login.keychain-db
+   security find-identity -v -p codesigning   # 期望：1 valid identities found
+   ```
+
+   **② 钥匙串条目的 ACL 要重建一次**——旧条目的 ACL 是一组 `cdhash` + 「自签名根证书」的白名单，
+   换成 Apple 证书后它谁也不认，于是**每次启动**都弹 `action:24` 的 ACL 授权
+   （此时点「始终允许」也**不会**写进去，因为 ACL 更新失败）。把条目按新身份重建：
+
+   ```bash
+   S=flutter_secure_storage_service; A=totp_accounts_v1
+   V=$(security find-generic-password -s $S -a $A -w)      # 先取出数据
+   security delete-generic-password -s $S -a $A
+   security add-generic-password -s $S -a $A -w "$V" \
+     -T /Applications/lzy_totp.app -T /usr/bin/security     # ACL 改信任 Apple 签名后的 App
+   ```
+
+   然后启动一次 App，在弹窗上点 **「始终允许」**（这次是分区层 `action:65538`，
+   会把 `teamid:<你的TEAMID>` 写进条目分区列表）。
+
+   **验收（本机结果）**：连开 3 次 → `log show` 0 次弹窗；再**重新构建并安装**（新 cdhash）→
+   启动 0 次弹窗。日志里的分区从 `cdhash:…` 变成 `teamid:RDNA7TV9SJ`，这就是「重建不再弹」的原理。
+
    - **为什么免费账号够**：macOS App 只有在使用需要授权的 entitlement（沙盒、
      keychain-access-groups、iCloud、推送等）时才需要 provisioning profile。
      本 App 已关闭沙盒、没有受限 entitlement，因此不需要 profile，
@@ -419,7 +470,7 @@ App 的账号存在系统钥匙串（`flutter_secure_storage_service` / `totp_ac
 
 | 方案 | 效果 | 代价 |
 |---|---|---|
-| **A. Apple ID 签发的 Apple Development 证书**（免费账号即可） | 团队 ID 稳定 → 弹窗彻底消失 | 需要登录 Apple ID 并生成证书（见上一节步骤） |
+| **A. Apple ID 签发的 Apple Development 证书**（免费账号即可）✅ **已采用（2026-11-13）** | 团队 ID 稳定 → 弹窗彻底消失（实测重建也不再弹） | 一次性配置：登录 Apple ID + 生成证书 + 补 G3 中间证书 + 重建条目 ACL |
 | **B. App 不再用钥匙串**（账号也放进加密 vault） | 弹窗彻底消失 | 密钥保护从钥匙串托管降级为「AES-256-GCM + 600 权限的 key 文件」，**降低**静态保护 |
 
 升级用一条命令（构建 → 停旧版 → 安装到 /Applications → 启动）：
