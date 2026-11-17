@@ -187,6 +187,73 @@ void _noteFieldTests() {
       expect(renamed.note, '工作');
     });
   });
+
+  group('恢复码加密存储', () {
+    late Directory tmp2;
+    late TotpPaths paths2;
+    late VaultStore vault2;
+
+    setUp(() async {
+      tmp2 = await Directory.systemTemp.createTemp('totp_core_recovery_');
+      paths2 = TotpPaths(tmp2.path);
+      vault2 = VaultStore(paths: paths2);
+    });
+
+    tearDown(() async {
+      if (await tmp2.exists()) await tmp2.delete(recursive: true);
+    });
+
+    test('恢复码与密钥一样在磁盘上是密文', () async {
+      const code = 'abcd-efgh-1234';
+      await vault2.save([
+        TotpAccount(
+          id: '1',
+          issuer: 'GitHub',
+          label: 'me@x.com',
+          secret: 'JBSWY3DPEHPK3PXP',
+          recoveryCodes: [code],
+        ),
+      ]);
+      final raw = await File(paths2.vaultFile).readAsString();
+      expect(raw.contains(code), isFalse, reason: '恢复码明文不得落盘');
+      expect(raw.contains('enc:v1:'), isTrue);
+    });
+
+    test('保存后往返一致（含已用恢复码）', () async {
+      await vault2.save([
+        TotpAccount(
+          id: '1',
+          issuer: 'GitHub',
+          label: 'me@x.com',
+          secret: 'JBSWY3DPEHPK3PXP',
+          recoveryCodes: ['abcd-efgh', '1234-5678'],
+          usedRecoveryCodes: ['zzzz-9999'],
+        ),
+      ]);
+      final loaded = (await vault2.load()).single;
+      expect(loaded.recoveryCodes, ['abcd-efgh', '1234-5678']);
+      expect(loaded.usedRecoveryCodes, ['zzzz-9999']);
+    });
+
+    test('旧 vault（没有恢复码字段）仍能正常读出', () async {
+      await vault2.save([
+        TotpAccount(
+          id: '1',
+          issuer: 'GitHub',
+          label: 'me@x.com',
+          secret: 'JBSWY3DPEHPK3PXP',
+        ),
+      ]);
+      // 手工抹掉恢复码字段，模拟历史数据
+      final raw = await File(paths2.vaultFile).readAsString();
+      await File(paths2.vaultFile).writeAsString(
+        raw.replaceAll('"recoveryCodes": [],', '"recoveryCodesX": [],'),
+      );
+      final loaded = (await vault2.load()).single;
+      expect(loaded.recoveryCodes, isEmpty);
+      expect(loaded.secret, 'JBSWY3DPEHPK3PXP');
+    });
+  });
 }
 
 void _settingsTests() {

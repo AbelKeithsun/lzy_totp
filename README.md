@@ -5,9 +5,18 @@ Flutter 编写的两步验证（2FA）应用，对标 andOTP / Google Authentica
 
 ## 功能
 
-- **扫码添加**：识别 `otpauth://totp/...` 二维码（mobile_scanner + ML Kit，仅 Android/iOS）
+- **扫码添加**：识别 `otpauth://totp/...` 与 `otpauth://hotp/...` 二维码（mobile_scanner + ML Kit，仅 Android/iOS）
 - **手动添加**：输入 Base32 密钥，支持位数（6/8）、周期（30/60s）、算法（SHA1/SHA256/SHA512）
   （桌面端自动聚焦密钥框，打开即 Cmd+V 粘贴）
+- **类型：TOTP / HOTP**：TOTP 按时间（30 秒一变，默认）；HOTP 按计数器
+  （RFC 4226，用一次 +1，少数硬件令牌 / 银行类服务用它）。
+  HOTP 的取码与复制都会把计数器 +1 并落库，服务端同样 +1 才能对上；
+  首页显示当前计数器而不是倒计时圆环
+- **时间字段**：每条账户记录**创建时间**（录入时自动）与**最近取码时间**
+  （App 复制 / CLI 取码时更新），并可设**失效日期**——到期只在列表与详情里提醒
+  「密钥可能已轮换」，不阻止继续取码；旧数据没有这些字段时显示「— / 从未」
+- **账户详情**：⋮ 菜单 / 长按 →「账户详情」，集中查看类型、计数器、位数/周期/算法、
+  创建 / 最近取码 / 失效时间、恢复码数量与 AI 权限
 - **账户名必填 + 备注**：账户名带 `*` 标识且做非空校验，首页直接显示，用来区分不同系统 / 环境；
   另有可选的发行方与备注（如「生产环境 / 测试环境」）；扫码得到的二维码若没带名称，会要求补全后再入库
 - **编辑已有账号**：⋮ 菜单 / 长按 →「编辑账户」，可补账户名、发行方、备注，或修正密钥；
@@ -93,9 +102,10 @@ lib/                              # Flutter App（Android + macOS）
   pages/scan_page.dart            # 扫码页
   pages/add_account_page.dart     # 手动添加页（含恢复码录入）
   pages/recovery_codes_sheet.dart # 恢复码面板（查看 / 复制 / 标记已用 / 删除）
+  pages/account_detail_sheet.dart # 账户详情（类型 / 计数器 / 创建 / 最近取码 / 失效时间）
 packages/totp_core/               # 共享内核（纯 Dart，App / CLI / MCP 共用）
-  lib/src/totp.dart               # TOTP 计算（RFC 6238）
-  lib/src/account.dart            # 账户模型 + otpauth:// 解析 + aiAllowed 标记 + 恢复码
+  lib/src/totp.dart               # TOTP（RFC 6238）+ HOTP（RFC 4226）计算
+  lib/src/account.dart            # 账户模型：otpauth 解析 + aiAllowed + 恢复码 + 类型/计数器/时间
   lib/src/vault.dart              # AES-256-GCM 加密 vault（密钥与恢复码都加密）
   lib/src/policy.dart             # AI 访问策略（默认放行 + deny 黑名单）
   lib/src/settings.dart           # 本地设置（总开关、HTTP token/端口，App 与 CLI 共用）
@@ -144,8 +154,13 @@ lzy-totp code              # vault 只有一个账号时，名称可省略
 lzy-totp code github       # 指定账号
 lzy-totp code github --json
 lzy-totp recovery github   # 查看恢复码（仅限人工在交互终端执行）
+lzy-totp add token --secret <Base32> --type hotp --counter 0 --expires 2027-12-31
+lzy-totp info github       # 类型 / 计数器 / 创建 / 最近取码 / 失效日期
 lzy-totp list / info / audit / doctor
 ```
+
+> HOTP 在 CLI 侧同样是「取一次码 = 用掉一个」：`lzy-totp code` 会输出当前计数器的码，
+> 然后把计数器 +1（`--json` 里给出 `counter` 与 `next_counter`）。
 
 它直接读 `~/.config/lzy_totp` 的加密 vault，**不依赖 App 运行**，也不需要任何服务在后台。
 

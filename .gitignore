@@ -45,3 +45,15 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# 密钥 / 凭据：即使误放进仓库目录也不要提交（防御性忽略，2026-11-13 开源检查时补）
+*.jks
+*.keystore
+*.key
+*.pem
+*.p12
+*.pfx
+.env
+.env.*
+**/key.properties
+**/local.properties

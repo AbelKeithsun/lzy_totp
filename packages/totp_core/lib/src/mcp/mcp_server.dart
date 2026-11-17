@@ -218,15 +218,47 @@ class McpServer {
 
     final now = DateTime.now();
     final code = TotpService.codeFor(account, now: now);
-    final remaining = TotpService.remainingSeconds(period: account.period, now: now);
+
+    // 记录最近取码时间；HOTP 需要把计数器 +1（服务端用掉后也会 +1）。
+    // 写不进去不影响取码结果。
+    var nextCounter = account.counter;
+    try {
+      await vault.update((accounts) async {
+        final i = accounts.indexWhere((a) => a.id == account.id);
+        if (i >= 0) {
+          final updated = accounts[i].touch(now: now).advanceCounter();
+          nextCounter = updated.counter;
+          accounts[i] = updated;
+        }
+        return null;
+      });
+    } catch (_) {
+      // ignore
+    }
+
     await audit.append(AuditEntry(
-      action: 'generate_totp',
+      action: account.isHotp ? 'generate_hotp' : 'generate_totp',
       account: account.displayTitle,
       result: 'ok',
       actor: 'mcp',
+      note: account.isHotp ? 'counter=${account.counter}' : null,
     ));
+
+    if (account.isHotp) {
+      return _encode({
+        'account': account.displayTitle,
+        'type': 'hotp',
+        'code': code,
+        'counter': account.counter,
+        'next_counter': nextCounter,
+      });
+    }
+
+    final remaining =
+        TotpService.remainingSeconds(period: account.period, now: now);
     return _encode({
       'account': account.displayTitle,
+      'type': 'totp',
       'code': code,
       'remaining_seconds': remaining,
       'period': account.period,
@@ -253,6 +285,11 @@ class McpServer {
       digits: args['digits'] as int? ?? 6,
       period: args['period'] as int? ?? 30,
       algorithm: (args['algorithm'] as String? ?? 'SHA1').toUpperCase(),
+      type: (args['type'] as String?)?.toLowerCase() == TotpAccount.typeHotp
+          ? TotpAccount.typeHotp
+          : TotpAccount.typeTotp,
+      counter: args['counter'] as int? ?? 0,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
       // 默认放行：只有显式传 block_ai=true 才禁止
       aiAllowed: !(args['block_ai'] as bool? ?? false),
       note: args['note'] as String? ?? '',
@@ -353,9 +390,20 @@ class McpServer {
         'digits': a.digits,
         'period': a.period,
         'algorithm': a.algorithm,
+        'type': a.type,
+        'counter': a.isHotp ? a.counter : null,
+        'created_at': _iso(a.createdAt),
+        'last_used_at': _iso(a.lastUsedAt),
+        'expires_at': _iso(a.expiresAt),
+        'expired': a.isExpired,
         'ai_allowed': a.aiAllowed,
         'note': a.note,
       };
+
+  /// epoch 毫秒 → ISO8601（空值返回 null）
+  static String? _iso(int? ms) => ms == null
+      ? null
+      : DateTime.fromMillisecondsSinceEpoch(ms).toIso8601String();
 
   Future<TotpAccount> _requireAccount(String query) async {
     final accounts = await vault.load();
@@ -440,7 +488,8 @@ const List<Map<String, dynamic>> _toolDefinitions = [
   },
   {
     'name': 'generate_totp',
-    'description': '生成指定账号当前的一次性验证码（30 秒内有效）。'
+    'description': '生成指定账号当前的一次性验证码。TOTP 30 秒内有效；'
+        'HOTP 取码后计数器自动 +1（同一个码只能用一次）。'
         '默认放行；若该账号被显式禁止（ai_allowed=false）则返回错误。',
     'inputSchema': {
       'type': 'object',
@@ -463,6 +512,9 @@ const List<Map<String, dynamic>> _toolDefinitions = [
         'digits': {'type': 'integer', 'enum': [6, 8]},
         'period': {'type': 'integer', 'enum': [30, 60]},
         'algorithm': {'type': 'string', 'enum': ['SHA1', 'SHA256', 'SHA512']},
+        'type': {'type': 'string', 'enum': ['totp', 'hotp'],
+          'description': '默认 totp（按时间）；hotp 按计数器，需配合 counter'},
+        'counter': {'type': 'integer', 'description': 'HOTP 起始计数器，默认 0'},
         'block_ai': {'type': 'boolean', 'description': '是否禁止 AI 取码，默认 false（即允许）'},
       },
       'required': ['account', 'secret'],

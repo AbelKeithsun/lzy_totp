@@ -238,10 +238,10 @@ lzy-totp code github --json   # 结构化输出，带剩余秒数
 
 | 工具 | 必填参数 | 可选参数 | 作用 |
 |---|---|---|---|
-| `list_accounts` | — | — | 列出账号 + 发行方 / 账户名 / 备注 + `ai_allowed`（不含密钥） |
-| `get_account_info` | `account` | — | 单个账号元数据（不含密钥） |
-| `generate_totp` | `account` | — | 取当前验证码；被 deny 的账号返回错误且不含任何码 |
-| `add_account` | `account`、`secret` | `issuer`、`label`、`digits`、`period`、`algorithm`、`note`、`block_ai` | 录入账号（`account` 即账户名；`block_ai=true` 禁止 AI） |
+| `list_accounts` | — | — | 列出账号 + 发行方 / 账户名 / 备注 + 类型 + `ai_allowed`（不含密钥） |
+| `get_account_info` | `account` | — | 单个账号元数据：类型 / 计数器 / 创建 / 最近取码 / 失效时间（不含密钥） |
+| `generate_totp` | `account` | — | 取当前验证码；被 deny 的账号返回错误且不含任何码。HOTP 取码后计数器自动 +1 |
+| `add_account` | `account`、`secret` | `issuer`、`label`、`digits`、`period`、`algorithm`、`type`、`counter`、`note`、`block_ai` | 录入账号（`account` 即账户名；`type=hotp` 时用 `counter` 指定起始计数器） |
 | `add_from_uri` | `uri` | `account`、`note`、`block_ai` | 从 `otpauth://` URI 录入 |
 | `remove_account` | `account` | — | 删除账号 |
 | `set_ai_allowed` | `account`、`allowed` | — | 允许 / 禁止个别账号 |
@@ -336,7 +336,9 @@ lzy-totp ai on       # 重新开启：**只允许人工在交互终端确认**�
 |---|---|
 | 默认放行 + 黑名单 | 新增账号 `ai_allowed=true`，AI 即可取码；敏感账号用 `lzy-totp deny <名称>` 关闭 |
 | 只给码，不给密钥 | 工具面（含 `list_accounts`）**永不返回 secret** |
-| 密钥加密落盘 | AES-256-GCM，密钥文件与 vault 权限均为 `600` |
+| 恢复码也不给 AI | 恢复码能绕过 TOTP 登录：7 个 MCP 工具一个都不返回它；CLI 的 `lzy-totp recovery` 仅限人工在交互终端执行，AI 子进程调用一律拒绝并记审计 |
+| 只读元数据 | `list_accounts` / `get_account_info` 会给出类型、计数器、创建 / 最近取码 / 失效时间——这些不参与取码，便于 agent 判断账号是否该轮换 |
+| 密钥加密落盘 | AES-256-GCM，密钥文件与 vault 权限均为 `600`；恢复码同样逐条加密 |
 | 全程可审计 | 每次取码（成功与拒绝都算）写入 `audit.jsonl`，记录来源 `cli` / `mcp` |
 | 本地优先 | 纯本地进程，不开网络端口，不外传任何数据 |
 

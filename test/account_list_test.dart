@@ -486,4 +486,186 @@ void main() {
 
     await unmount(tester);
   });
+
+  group('恢复码面板', () {
+    testWidgets('菜单里能打开恢复码面板，看到恢复码', (tester) async {
+      final storage = FakeStorage([
+        testAccount('1', 'GitHub', 'me@github.com').copyWith(
+          recoveryCodes: ['abcd-efgh', '1234-5678'],
+        ),
+      ]);
+      await pumpList(tester, storage);
+
+      // 菜单项带上剩余可用的数量
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      expect(find.text('恢复码（2）'), findsOneWidget);
+
+      await tester.tap(find.text('恢复码（2）'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('恢复码 · GitHub'), findsOneWidget);
+      expect(find.text('abcd-efgh'), findsOneWidget);
+      expect(find.text('1234-5678'), findsOneWidget);
+      expect(find.textContaining('还有 2 个可用'), findsOneWidget);
+
+      await unmount(tester);
+    });
+
+    testWidgets('标记已用：划掉并落库', (tester) async {
+      final storage = FakeStorage([
+        testAccount('1', 'GitHub', 'me@github.com').copyWith(
+          recoveryCodes: ['abcd-efgh', '1234-5678'],
+        ),
+      ]);
+      await pumpList(tester, storage);
+
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('恢复码（2）'));
+      await tester.pumpAndSettle();
+
+      // 第一行恢复码的操作菜单
+      final rowMenu = find.descendant(
+        of: find.ancestor(
+          of: find.text('abcd-efgh'),
+          matching: find.byType(ListTile),
+        ),
+        matching: find.byIcon(Icons.more_vert),
+      );
+      await tester.tap(rowMenu);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('标记已用'));
+      await tester.pumpAndSettle();
+
+      // 面板里出现「已用掉」分组
+      expect(find.text('已用掉'), findsOneWidget);
+      // 存储里也更新了
+      expect(storage.accounts.single.recoveryCodes, ['1234-5678']);
+      expect(storage.accounts.single.usedRecoveryCodes, ['abcd-efgh']);
+      expect(storage.saveCount, 1);
+
+      await unmount(tester);
+    });
+
+    testWidgets('没录恢复码的账号：面板给出补录提示', (tester) async {
+      final storage = FakeStorage([testAccount('1', 'GitHub', 'me@github.com')]);
+      await pumpList(tester, storage);
+
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('恢复码'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('还没录恢复码'), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
+  group('类型与时间', () {
+    TotpAccount hotp({int counter = 0}) => TotpAccount(
+          id: 'h',
+          issuer: 'Legacy',
+          label: 'token',
+          secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ',
+          type: TotpAccount.typeHotp,
+          counter: counter,
+        );
+
+    testWidgets('HOTP 列表：显示计数器、没有倒计时圆环', (tester) async {
+      final storage = FakeStorage([hotp(counter: 3)]);
+      await pumpList(tester, storage);
+
+      expect(find.textContaining('HOTP · 计数器 3'), findsOneWidget);
+      expect(find.text('#3'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+
+      await unmount(tester);
+    });
+
+    testWidgets('HOTP：点一下复制 → 计数器 +1 且记录最近取码时间', (tester) async {
+      final storage = FakeStorage([hotp()]);
+      await pumpList(tester, storage);
+
+      await tester.tap(find.text('Legacy (token)'));
+      await tester.pumpAndSettle();
+
+      final saved = storage.accounts.single;
+      expect(saved.counter, 1, reason: '用掉一个码就要 +1');
+      expect(saved.lastUsedAt, isNotNull);
+      expect(find.textContaining('计数器 1'), findsOneWidget);
+      expect(find.textContaining('计数器已 +1'), findsOneWidget);
+
+      await unmount(tester);
+    });
+
+    testWidgets('TOTP：复制只记录时间，不动计数器', (tester) async {
+      final storage = FakeStorage([testAccount('1', 'GitHub', 'me@github.com')]);
+      await pumpList(tester, storage);
+
+      await tester.tap(find.text('GitHub (me@github.com)'));
+      await tester.pumpAndSettle();
+
+      final saved = storage.accounts.single;
+      expect(saved.counter, 0);
+      expect(saved.lastUsedAt, isNotNull);
+      expect(saved.lastUsedAtTime, isNotNull);
+
+      await unmount(tester);
+    });
+
+    testWidgets('账户详情：类型 / 创建时间 / 最近取码 / 失效日期', (tester) async {
+      final created = DateTime(2026, 1, 2, 3, 4).millisecondsSinceEpoch;
+      final used = DateTime(2026, 2, 3, 4, 5).millisecondsSinceEpoch;
+      final account = TotpAccount(
+        id: '1',
+        issuer: 'Legacy',
+        label: 'token',
+        secret: 'GEZDGNBVGY3TQOJQ',
+        type: TotpAccount.typeHotp,
+        counter: 7,
+        createdAt: created,
+        lastUsedAt: used,
+        expiresAt: DateTime(2027, 3, 4, 23, 59).millisecondsSinceEpoch,
+      );
+      final storage = FakeStorage([account]);
+      await pumpList(tester, storage);
+
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('账户详情'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('账户详情'), findsWidgets);
+      expect(find.text('HOTP（按计数器，用一次 +1）'), findsOneWidget);
+      expect(find.text('2026-01-02 03:04'), findsOneWidget);
+      expect(find.text('2026-02-03 04:05'), findsOneWidget);
+      expect(find.text('2027-03-04 23:59'), findsOneWidget);
+      expect(find.textContaining('计数器 7'), findsWidgets);
+      expect(find.text('未录入'), findsOneWidget, reason: '恢复码未录入');
+
+      await unmount(tester);
+    });
+
+    testWidgets('已过有效期：列表给提醒，详情里标红', (tester) async {
+      final account = testAccount('1', 'GitHub', 'me@github.com').copyWith(
+        expiresAt: DateTime(2020, 1, 1).millisecondsSinceEpoch,
+      );
+      final storage = FakeStorage([account]);
+      await pumpList(tester, storage);
+
+      expect(find.textContaining('已过有效期'), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('账户详情'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('已过有效期'), findsWidgets);
+      expect(find.textContaining('可能已被网站轮换'), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
 }

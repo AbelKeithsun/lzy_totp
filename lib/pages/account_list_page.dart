@@ -10,8 +10,10 @@ import '../services/mcp_service.dart';
 import '../services/storage_service.dart';
 import '../services/totp_service.dart';
 import '../utils/platform_utils.dart';
+import 'account_detail_sheet.dart';
 import 'add_account_page.dart';
 import 'ai_access_page.dart';
+import 'recovery_codes_sheet.dart';
 import 'settings_page.dart';
 import 'scan_page.dart';
 
@@ -357,14 +359,89 @@ class _AccountListPageState extends State<AccountListPage> {
     );
   }
 
-  void _copy(String code) {
-    Clipboard.setData(ClipboardData(text: code));
+  /// 复制验证码：顺带记录「最近取码时间」；HOTP 还要把计数器 +1。
+  ///
+  /// HOTP 没有 30 秒过期，服务端接受一个码后自己也会 +1——所以客户端必须在
+  /// 「用掉」时 +1，否则下次会拿同一个已失效的码去登录。
+  /// 已同步给 AI vault 的账号，vault 里的计数与时间也一起更新（尽力而为）。
+  Future<void> _copyFor(TotpAccount account) async {
+    final code = TotpService.codeFor(account);
+    // 剪贴板写入不阻塞后续落库：它只是平台通道的副作用，
+    // 等待它反而会让「点一下」在部分环境下卡住。
+    unawaited(Clipboard.setData(ClipboardData(text: code)));
+
+    final updated = account.touch().advanceCounter();
+    final index = _accounts.indexWhere((a) => a.id == account.id);
+    if (index >= 0) {
+      setState(() => _accounts[index] = updated);
+      await _persist();
+    }
+
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
-      ..showSnackBar(const SnackBar(
-        content: Text('验证码已复制'),
-        duration: Duration(seconds: 1),
+      ..showSnackBar(SnackBar(
+        content: Text(account.isHotp ? '验证码已复制（HOTP 计数器已 +1）' : '验证码已复制'),
+        duration: const Duration(seconds: 1),
       ));
+
+    // HOTP 的计数必须两边一致，否则 CLI 会拿旧计数生成已失效的码
+    if (!account.isHotp || !_aiSyncEnabled) return;
+    if (_aiVault.stateOf(account, _vaultAccounts) == VaultSyncState.notSynced) {
+      return;
+    }
+    try {
+      await _aiVault.replace(account, updated);
+      await _reloadVault();
+    } catch (_) {
+      // 同步失败不影响本地复制；下次编辑/同步时会把计数带过去
+    }
+  }
+
+  /// 账户详情：类型、参数、创建 / 最近取码 / 失效时间、恢复码与 AI 权限
+  Future<void> _showDetail(TotpAccount account) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => AccountDetailSheet(
+        account: account,
+        aiState: _aiSyncEnabled
+            ? _aiVault.stateOf(account, _vaultAccounts)
+            : null,
+      ),
+    );
+  }
+
+  /// 查看恢复码：可复制、可标记已用、可删除；改动立刻落库。
+  ///
+  /// 若该账号已同步给 AI vault，vault 里的条目也一并更新（保持两边一致）。
+  Future<void> _showRecoveryCodes(TotpAccount account) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => RecoveryCodesSheet(
+        account: account,
+        onChanged: (updated) async {
+          final index = _accounts.indexWhere((a) => a.id == account.id);
+          if (index < 0) return;
+          setState(() => _accounts[index] = updated);
+          await _persist();
+          if (!_aiSyncEnabled) return;
+          if (_aiVault.stateOf(account, _vaultAccounts) ==
+              VaultSyncState.notSynced) {
+            return;
+          }
+          try {
+            await _aiVault.replace(account, updated);
+            await _reloadVault();
+          } catch (e) {
+            _snackError('恢复码已保存，但更新 AI vault 失败：${_describe(e)}');
+          }
+        },
+      ),
+    );
   }
 
   @override
@@ -421,11 +498,13 @@ class _AccountListPageState extends State<AccountListPage> {
                 return _AccountTile(
                   key: ValueKey(account.id),
                   account: account,
-                  onCopy: _copy,
+                  onCopy: () => _copyFor(account),
+                  onDetail: () => _showDetail(account),
                   // 左滑：先确认，再落库删除
                   onConfirmDelete: () => _confirmDelete(account),
                   onDelete: () => _removeAccount(account),
                   onEdit: () => _editAccount(account),
+                  onRecovery: () => _showRecoveryCodes(account),
                   aiState: _aiSyncEnabled
                       ? _aiVault.stateOf(account, _vaultAccounts)
                       : null,
@@ -474,22 +553,29 @@ class _AccountListPageState extends State<AccountListPage> {
 }
 
 /// 列表项菜单里的操作
-enum _RowAction { edit, copy, aiSync, delete }
+enum _RowAction { edit, copy, detail, recovery, aiSync, delete }
 
 class _AccountTile extends StatelessWidget {
   const _AccountTile({
     super.key,
     required this.account,
     required this.onCopy,
+    required this.onDetail,
     required this.onConfirmDelete,
     required this.onDelete,
     required this.onEdit,
+    required this.onRecovery,
     required this.onAiTap,
     this.aiState,
   });
 
   final TotpAccount account;
-  final ValueChanged<String> onCopy;
+
+  /// 复制验证码（父级负责记录最近取码时间 / HOTP 计数 +1）
+  final VoidCallback onCopy;
+
+  /// 打开账户详情（类型与时间字段）
+  final VoidCallback onDetail;
 
   /// 弹出删除确认框；返回是否确认删除
   final Future<bool> Function() onConfirmDelete;
@@ -499,6 +585,9 @@ class _AccountTile extends StatelessWidget {
 
   /// 打开编辑页（补账户名 / 发行方 / 备注）
   final VoidCallback onEdit;
+
+  /// 打开恢复码面板（查看 / 复制 / 标记已用）
+  final VoidCallback onRecovery;
 
   /// 点一下同步给 AI / 取消同步（null 表示当前平台不提供该功能）
   final VoidCallback onAiTap;
@@ -526,6 +615,12 @@ class _AccountTile extends StatelessWidget {
         _ => '取消 AI 读取',
       };
 
+  /// 恢复码菜单项文案：带上剩余可用的数量，一眼看出还剩几个
+  String get _recoveryLabel {
+    final n = account.recoveryCodeCount;
+    return n > 0 ? '恢复码（$n）' : '恢复码';
+  }
+
   IconData get _aiMenuIcon => switch (aiState) {
         VaultSyncState.notSynced => Icons.cloud_upload_outlined,
         _ => Icons.cloud_off,
@@ -535,12 +630,16 @@ class _AccountTile extends StatelessWidget {
     if (await onConfirmDelete()) onDelete();
   }
 
-  void _handleAction(_RowAction action, String code) {
+  void _handleAction(_RowAction action) {
     switch (action) {
       case _RowAction.edit:
         onEdit();
       case _RowAction.copy:
-        onCopy(code);
+        onCopy();
+      case _RowAction.detail:
+        onDetail();
+      case _RowAction.recovery:
+        onRecovery();
       case _RowAction.aiSync:
         onAiTap();
       case _RowAction.delete:
@@ -567,6 +666,16 @@ class _AccountTile extends StatelessWidget {
               title: const Text('复制验证码'),
               onTap: () => Navigator.pop(ctx, _RowAction.copy),
             ),
+            ListTile(
+              leading: const Icon(Icons.vpn_key_outlined),
+              title: Text(_recoveryLabel),
+              onTap: () => Navigator.pop(ctx, _RowAction.recovery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.info_outline),
+              title: const Text('账户详情'),
+              onTap: () => Navigator.pop(ctx, _RowAction.detail),
+            ),
             if (_aiEnabled)
               ListTile(
                 leading: Icon(_aiMenuIcon),
@@ -582,7 +691,7 @@ class _AccountTile extends StatelessWidget {
         ),
       ),
     );
-    if (action != null) _handleAction(action, code);
+    if (action != null) _handleAction(action);
   }
 
   @override
@@ -593,6 +702,7 @@ class _AccountTile extends StatelessWidget {
     // 注意 TotpService.progress() 是「已过去比例」，直接用会让圆环在周期起点为空。
     final ringValue = remaining / account.period;
     final theme = Theme.of(context);
+    final expired = account.isExpired;
 
     // 6 位验证码中间加空格，便于阅读
     final grouped = code.length == 6
@@ -612,9 +722,11 @@ class _AccountTile extends StatelessWidget {
       confirmDismiss: (_) => onConfirmDelete(),
       onDismissed: (_) => onDelete(),
       child: ListTile(
-        onTap: () => onCopy(code),
+        onTap: onCopy,
         onLongPress: () => _showActionsSheet(context, code),
-        isThreeLine: account.note.isNotEmpty,
+        isThreeLine: account.note.isNotEmpty ||
+            account.isHotp ||
+            expired,
         title: Text(account.displayTitle,
             maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Column(
@@ -637,6 +749,27 @@ class _AccountTile extends StatelessWidget {
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
+              ),
+            if (account.isHotp)
+              Text(
+                'HOTP · 计数器 ${account.counter}（复制后 +1）',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            if (expired)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.warning_amber,
+                      size: 14, color: theme.colorScheme.error),
+                  const SizedBox(width: 4),
+                  Text(
+                    '已过有效期，密钥可能已轮换',
+                    style: theme.textTheme.labelSmall
+                        ?.copyWith(color: theme.colorScheme.error),
+                  ),
+                ],
               ),
           ],
         ),
@@ -663,28 +796,44 @@ class _AccountTile extends StatelessWidget {
                 icon: const Icon(Icons.copy, size: 18),
                 tooltip: '复制验证码',
                 visualDensity: VisualDensity.compact,
-                onPressed: () => onCopy(code),
+                onPressed: onCopy,
               ),
-            SizedBox(
-              width: 36,
-              height: 36,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  CircularProgressIndicator(
-                    value: ringValue,
-                    strokeWidth: 3,
-                    color: remaining <= 5 ? theme.colorScheme.error : null,
+            // TOTP 给倒计时圆环；HOTP 没有周期，改显示计数器
+            if (account.isHotp)
+              Tooltip(
+                message: 'HOTP 计数器',
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: theme.colorScheme.outlineVariant),
+                    borderRadius: BorderRadius.circular(6),
                   ),
-                  Text('$remaining', style: theme.textTheme.labelSmall),
-                ],
+                  child: Text('#${account.counter}',
+                      style: theme.textTheme.labelSmall),
+                ),
+              )
+            else
+              SizedBox(
+                width: 36,
+                height: 36,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    CircularProgressIndicator(
+                      value: ringValue,
+                      strokeWidth: 3,
+                      color: remaining <= 5 ? theme.colorScheme.error : null,
+                    ),
+                    Text('$remaining', style: theme.textTheme.labelSmall),
+                  ],
+                ),
               ),
-            ),
             // 显式删除入口：桌面端无法左滑，菜单与长按都可删除
             PopupMenuButton<_RowAction>(
               tooltip: '更多操作',
               icon: const Icon(Icons.more_vert, size: 20),
-              onSelected: (action) => _handleAction(action, code),
+              onSelected: (action) => _handleAction(action),
               itemBuilder: (_) => [
                 const PopupMenuItem(
                   value: _RowAction.edit,
@@ -703,6 +852,26 @@ class _AccountTile extends StatelessWidget {
                       Icon(Icons.copy, size: 18),
                       SizedBox(width: 12),
                       Text('复制验证码'),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
+                  value: _RowAction.recovery,
+                  child: Row(
+                    children: [
+                      const Icon(Icons.vpn_key_outlined, size: 18),
+                      const SizedBox(width: 12),
+                      Text(_recoveryLabel),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: _RowAction.detail,
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, size: 18),
+                      SizedBox(width: 12),
+                      Text('账户详情'),
                     ],
                   ),
                 ),

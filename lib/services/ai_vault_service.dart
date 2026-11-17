@@ -23,6 +23,8 @@ enum VaultSyncState {
 /// - **不覆盖 deny**：vault 里若已有同一账号且被 `lzy-totp deny` 禁止，同步不会把
 ///   `aiAllowed` 改回 true，避免误点一下就放开了敏感账号。
 /// - 只写码不写日志内容以外的信息：vault 里仍以 AES-256-GCM 加密存储密钥。
+/// - 恢复码（备用码）也一并镜像进 vault（同样逐条加密），但**没有任何 MCP 工具会返回它**，
+///   CLI 的 `lzy-totp recovery` 也只允许人工在交互终端里查看。
 class AiVaultService {
   AiVaultService({TotpPaths? paths, VaultStore? vault})
       : paths = paths ?? TotpPaths.resolve(),
@@ -71,7 +73,15 @@ class AiVaultService {
           digits: account.digits,
           period: account.period,
           algorithm: account.algorithm,
+          type: account.type,
+          counter: account.counter,
+          createdAt: existing.createdAt ?? account.createdAt,
+          lastUsedAt: account.lastUsedAt,
+          expiresAt: account.expiresAt,
           aiAllowed: existing.aiAllowed,
+          note: account.note,
+          recoveryCodes: account.recoveryCodes,
+          usedRecoveryCodes: account.usedRecoveryCodes,
         );
       } else {
         created = true;
@@ -83,8 +93,18 @@ class AiVaultService {
           digits: account.digits,
           period: account.period,
           algorithm: account.algorithm,
+          type: account.type,
+          counter: account.counter,
+          createdAt: account.createdAt,
+          lastUsedAt: account.lastUsedAt,
+          expiresAt: account.expiresAt,
           // 同步的意图就是「让 AI 能取码」
           aiAllowed: true,
+          note: account.note,
+          // 恢复码一并镜像（vault 里逐条加密）；但没有任何 MCP 工具会返回它们，
+          // CLI 的 `lzy-totp recovery` 也只允许人工在终端里看。
+          recoveryCodes: account.recoveryCodes,
+          usedRecoveryCodes: account.usedRecoveryCodes,
         ));
       }
       return null;
@@ -115,6 +135,8 @@ class AiVaultService {
         algorithm: updated.algorithm,
         aiAllowed: existing.aiAllowed,
         note: updated.note,
+        recoveryCodes: updated.recoveryCodes,
+        usedRecoveryCodes: updated.usedRecoveryCodes,
       );
       return null;
     });

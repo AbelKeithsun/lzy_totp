@@ -42,7 +42,15 @@ class FakeAiVaultService extends AiVaultService {
         digits: account.digits,
         period: account.period,
         algorithm: account.algorithm,
+        type: account.type,
+        counter: account.counter,
+        createdAt: existing.createdAt ?? account.createdAt,
+        lastUsedAt: account.lastUsedAt,
+        expiresAt: account.expiresAt,
         aiAllowed: existing.aiAllowed,
+        note: account.note,
+        recoveryCodes: account.recoveryCodes,
+        usedRecoveryCodes: account.usedRecoveryCodes,
       );
       return false;
     }

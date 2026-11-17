@@ -2,10 +2,24 @@ import 'package:otp/otp.dart';
 
 import 'account.dart';
 
-/// 基于 otp 包的 TOTP 计算（RFC 6238）
+/// 一次性密码计算：TOTP（RFC 6238）+ HOTP（RFC 4226）
 class TotpService {
-  /// 生成当前时刻的验证码；[now] 可注入便于测试
+  /// 生成当前验证码。
+  ///
+  /// - `totp`：按 [now]（缺省当前时刻）取时间片；
+  /// - `hotp`：按账号里的 [TotpAccount.counter] 取码，**不会**自动 +1
+  ///   （什么时候 +1 由调用方决定：App 在复制后、CLI 在取码后）。
   static String codeFor(TotpAccount account, {DateTime? now}) {
+    if (account.isHotp) {
+      return OTP.generateHOTPCodeString(
+        account.secret,
+        account.counter,
+        length: account.digits,
+        algorithm: _algorithm(account.algorithm),
+        // 兼容 Google Authenticator 系的 base32 补齐习惯
+        isGoogle: true,
+      );
+    }
     final time = (now ?? DateTime.now()).millisecondsSinceEpoch;
     return OTP.generateTOTPCodeString(
       account.secret,
@@ -13,12 +27,11 @@ class TotpService {
       length: account.digits,
       interval: account.period,
       algorithm: _algorithm(account.algorithm),
-      // 兼容 Google Authenticator 系的 base32 补齐习惯
       isGoogle: true,
     );
   }
 
-  /// 当前周期剩余秒数
+  /// 当前周期剩余秒数（HOTP 没有周期概念，调用方应自行跳过）
   static int remainingSeconds({int period = 30, DateTime? now}) {
     final seconds = (now ?? DateTime.now()).millisecondsSinceEpoch ~/ 1000;
     return period - (seconds % period);

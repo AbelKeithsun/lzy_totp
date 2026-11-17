@@ -28,9 +28,17 @@ class _AddAccountPageState extends State<AddAccountPage> {
   late final TextEditingController _labelController;
   late final TextEditingController _secretController;
   late final TextEditingController _noteController;
+  late final TextEditingController _recoveryController;
+  late final TextEditingController _counterController;
   late int _digits;
   late int _period;
   late String _algorithm;
+
+  /// `totp`（按时间）或 `hotp`（按计数器）
+  late String _type;
+
+  /// 可选有效期（本地时区当天 23:59:59 结束）
+  DateTime? _expiresAt;
 
   @override
   void initState() {
@@ -40,9 +48,16 @@ class _AddAccountPageState extends State<AddAccountPage> {
     _labelController = TextEditingController(text: initial?.label ?? '');
     _secretController = TextEditingController(text: initial?.secret ?? '');
     _noteController = TextEditingController(text: initial?.note ?? '');
+    _recoveryController = TextEditingController(
+      text: (initial?.recoveryCodes ?? const <String>[]).join('\n'),
+    );
+    _counterController =
+        TextEditingController(text: '${initial?.counter ?? 0}');
     _digits = initial?.digits ?? 6;
     _period = initial?.period ?? 30;
     _algorithm = initial?.algorithm ?? 'SHA1';
+    _type = initial?.type ?? TotpAccount.typeTotp;
+    _expiresAt = initial?.expiresAtTime;
   }
 
   @override
@@ -51,8 +66,12 @@ class _AddAccountPageState extends State<AddAccountPage> {
     _labelController.dispose();
     _secretController.dispose();
     _noteController.dispose();
+    _recoveryController.dispose();
+    _counterController.dispose();
     super.dispose();
   }
+
+  bool get _isHotp => _type == TotpAccount.typeHotp;
 
   String? _validateLabel(String? value) {
     if ((value ?? '').trim().isEmpty) {
@@ -81,6 +100,33 @@ class _AddAccountPageState extends State<AddAccountPage> {
     return null;
   }
 
+  /// 解析恢复码输入：每行一个，去掉空行与重复项。
+  List<String> _parseRecoveryCodes() => TotpAccount.normalizeRecoveryCodes(
+        _recoveryController.text.split('\n'),
+      );
+
+  String? _validateRecoveryCodes(String? value) {
+    final codes = TotpAccount.normalizeRecoveryCodes(
+      (value ?? '').split('\n'),
+    );
+    if (codes.isEmpty) return null; // 可选
+    if (codes.length > 20) {
+      return '恢复码最多 20 个（多了通常是粘贴错了）';
+    }
+    final bad = codes.where((c) => !TotpAccount.isValidRecoveryCode(c));
+    if (bad.isNotEmpty) {
+      return '恢复码「${bad.first}」格式不对：应为字母 / 数字（可含 - 或 _），至少 4 位';
+    }
+    return null;
+  }
+
+  String? _validateCounter(String? value) {
+    if (!_isHotp) return null;
+    final n = int.tryParse((value ?? '').trim());
+    if (n == null || n < 0) return '计数器应为非负整数';
+    return null;
+  }
+
   void _save() {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     final base = widget.initial;
@@ -94,11 +140,45 @@ class _AddAccountPageState extends State<AddAccountPage> {
       digits: _digits,
       period: _period,
       algorithm: _algorithm,
+      type: _type,
+      counter: _isHotp ? (int.tryParse(_counterController.text.trim()) ?? 0) : 0,
+      // 创建时间只在首次录入时确定，编辑不覆盖
+      createdAt: base?.createdAt ?? DateTime.now().millisecondsSinceEpoch,
+      lastUsedAt: base?.lastUsedAt,
+      // 过期日存当天 23:59:59，避免「当天零点就过期」的意外
+      expiresAt: _expiresAt == null
+          ? null
+          : DateTime(_expiresAt!.year, _expiresAt!.month, _expiresAt!.day, 23,
+                  59, 59)
+              .millisecondsSinceEpoch,
       aiAllowed: base?.aiAllowed ?? TotpAccount.defaultAiAllowed,
       note: _noteController.text.trim(),
+      recoveryCodes: _parseRecoveryCodes(),
+      // 已用掉的恢复码留档：编辑页只维护「还没用过」的那些
+      usedRecoveryCodes: base?.usedRecoveryCodes ?? const <String>[],
     );
     Navigator.of(context).pop(account);
   }
+
+  /// 选失效日期（可选）；选中的是「到期日当天」，当天仍然有效
+  Future<void> _pickExpiresAt() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _expiresAt ?? now.add(const Duration(days: 90)),
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 20),
+      helpText: '选择失效日期（到期后仅提醒，不阻止取码）',
+    );
+    if (picked != null) setState(() => _expiresAt = picked);
+  }
+
+  String _formatDate(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  String _formatDateTime(DateTime d) =>
+      '${_formatDate(d)} ${d.hour.toString().padLeft(2, '0')}:'
+      '${d.minute.toString().padLeft(2, '0')}';
 
   @override
   Widget build(BuildContext context) {
@@ -163,7 +243,45 @@ class _AddAccountPageState extends State<AddAccountPage> {
               ),
               textInputAction: TextInputAction.next,
             ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _recoveryController,
+              decoration: const InputDecoration(
+                labelText: '恢复码（可选）',
+                hintText: '每行一个，如\nabcd-efgh\n1234-5678',
+                helperText: '网站给的备用码（一次性）：换手机 / 验证码器坏了时用它登录。'
+                    '与密钥同样加密保存，不会展示给 AI。',
+                helperMaxLines: 3,
+                border: OutlineInputBorder(),
+              ),
+              // 一行一个，最多数十行
+              minLines: 2,
+              maxLines: 6,
+              autocorrect: false,
+              keyboardType: TextInputType.multiline,
+              textInputAction: TextInputAction.newline,
+              validator: _validateRecoveryCodes,
+            ),
             const SizedBox(height: 24),
+            DropdownButtonFormField<String>(
+              initialValue: _type,
+              decoration: const InputDecoration(
+                labelText: '类型',
+                helperText: 'TOTP 按时间（30 秒一变，绝大多数网站）；'
+                    'HOTP 按计数器（用一次 +1，少数硬件令牌 / 银行类服务）',
+                helperMaxLines: 2,
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(
+                    value: TotpAccount.typeTotp, child: Text('TOTP（按时间）')),
+                DropdownMenuItem(
+                    value: TotpAccount.typeHotp, child: Text('HOTP（按计数器）')),
+              ],
+              onChanged: (v) => setState(
+                  () => _type = v ?? TotpAccount.typeTotp),
+            ),
+            const SizedBox(height: 16),
             Row(
               children: [
                 Expanded(
@@ -180,16 +298,27 @@ class _AddAccountPageState extends State<AddAccountPage> {
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: DropdownButtonFormField<int>(
-                    initialValue: _period,
-                    decoration: const InputDecoration(
-                        labelText: '周期', border: OutlineInputBorder()),
-                    items: const [
-                      DropdownMenuItem(value: 30, child: Text('30 秒')),
-                      DropdownMenuItem(value: 60, child: Text('60 秒')),
-                    ],
-                    onChanged: (v) => setState(() => _period = v ?? 30),
-                  ),
+                  child: _isHotp
+                      ? TextFormField(
+                          controller: _counterController,
+                          decoration: const InputDecoration(
+                            labelText: '计数器',
+                            hintText: '0',
+                            border: OutlineInputBorder(),
+                          ),
+                          keyboardType: TextInputType.number,
+                          validator: _validateCounter,
+                        )
+                      : DropdownButtonFormField<int>(
+                          initialValue: _period,
+                          decoration: const InputDecoration(
+                              labelText: '周期', border: OutlineInputBorder()),
+                          items: const [
+                            DropdownMenuItem(value: 30, child: Text('30 秒')),
+                            DropdownMenuItem(value: 60, child: Text('60 秒')),
+                          ],
+                          onChanged: (v) => setState(() => _period = v ?? 30),
+                        ),
                 ),
               ],
             ),
@@ -205,6 +334,46 @@ class _AddAccountPageState extends State<AddAccountPage> {
               ],
               onChanged: (v) => setState(() => _algorithm = v ?? 'SHA1'),
             ),
+            const SizedBox(height: 16),
+            // 失效日期（可选）：到期只提醒，不阻止取码
+            InputDecorator(
+              decoration: const InputDecoration(
+                labelText: '失效日期（可选）',
+                border: OutlineInputBorder(),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _expiresAt == null ? '未设置' : _formatDate(_expiresAt!),
+                      style: theme.textTheme.bodyLarge,
+                    ),
+                  ),
+                  if (_expiresAt != null)
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 18),
+                      tooltip: '清除失效日期',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => setState(() => _expiresAt = null),
+                    ),
+                  TextButton.icon(
+                    onPressed: _pickExpiresAt,
+                    icon: const Icon(Icons.event, size: 18),
+                    label: Text(_expiresAt == null ? '选择' : '修改'),
+                  ),
+                ],
+              ),
+            ),
+            // 编辑时把「创建 / 最近取码」亮出来，新增时不显示（还没发生）
+            if (editing && widget.initial != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                '创建于 ${widget.initial!.createdAtTime == null ? '—' : _formatDateTime(widget.initial!.createdAtTime!)}'
+                ' · 最近取码 ${widget.initial!.lastUsedAtTime == null ? '从未' : _formatDateTime(widget.initial!.lastUsedAtTime!)}',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ],
             const SizedBox(height: 32),
             FilledButton.icon(
               onPressed: _save,

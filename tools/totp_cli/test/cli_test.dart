@@ -116,6 +116,166 @@ void main() {
     });
   });
 
+  group('CLI 类型与时间', () {
+    const hotpSecret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+
+    test('add --type hotp --counter 3：取码用对应计数器并自动 +1', () async {
+      expect(
+        await run([
+          'add', 'token',
+          '--secret', hotpSecret,
+          '--type', 'hotp',
+          '--counter', '3',
+        ]),
+        ExitCode.ok,
+      );
+
+      await run(['info', 'token']);
+      expect(out.text, contains('HOTP（按计数器）'));
+      expect(out.text, contains('计数器 3'));
+
+      // RFC 4226：counter=3 → 969429，counter=4 → 338314
+      expect(await run(['code', 'token']), ExitCode.ok);
+      expect(out.text.trim(), '969429');
+
+      expect(await run(['code', 'token']), ExitCode.ok);
+      expect(out.text.trim(), '338314');
+
+      await run(['info', 'token']);
+      expect(out.text, contains('计数器 5'));
+    });
+
+    test('HOTP 取码 --json 带上 counter 与 next_counter', () async {
+      await run([
+        'add', 'token',
+        '--secret', hotpSecret,
+        '--type', 'hotp',
+      ]);
+      expect(await run(['code', 'token', '--json']), ExitCode.ok);
+      expect(out.text, contains('"type": "hotp"'));
+      expect(out.text, contains('"counter": 0'));
+      expect(out.text, contains('"next_counter": 1'));
+    });
+
+    test('add --expires 写入失效日期，info 能看到', () async {
+      expect(
+        await run([
+          'add', 'old',
+          '--secret', 'JBSWY3DPEHPK3PXP',
+          '--expires', '2027-12-31',
+        ]),
+        ExitCode.ok,
+      );
+      await run(['info', 'old']);
+      expect(out.text, contains('失效日期：2027-12-31'));
+    });
+
+    test('新录入的账号有创建时间；取码后记录最近取码时间', () async {
+      await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP']);
+      await run(['info', 'github']);
+      expect(out.text, contains('创建时间：'));
+      expect(out.text, isNot(contains('（未知，旧数据）')));
+      expect(out.text, contains('最近取码：从未'));
+
+      await run(['code', 'github']);
+      await run(['info', 'github']);
+      expect(out.text, isNot(contains('最近取码：从未')));
+    });
+
+    test('失效日期格式不对时报错', () async {
+      final code = await run([
+        'add', 'bad',
+        '--secret', 'JBSWY3DPEHPK3PXP',
+        '--expires', '2027/12/31x',
+      ]);
+      expect(code, ExitCode.usage);
+      expect(err.text, contains('YYYY-MM-DD'));
+    });
+  });
+
+  group('CLI 恢复码', () {
+    test('add --recovery 录入恢复码（逗号分隔 / 重复传参都行）', () async {
+      expect(
+        await run([
+          'add', 'github',
+          '--secret', 'JBSWY3DPEHPK3PXP',
+          '--recovery', 'abcd-efgh,1234-5678',
+        ]),
+        ExitCode.ok,
+      );
+
+      await run(['info', 'github']);
+      expect(out.text, contains('恢复码：2 个可用'));
+      expect(out.text, contains('lzy_totp recovery'));
+    });
+
+    test('恢复码在 vault 里是密文（明文不落盘）', () async {
+      await run([
+        'add', 'github',
+        '--secret', 'JBSWY3DPEHPK3PXP',
+        '--recovery', 'abcd-efgh',
+      ]);
+      final raw = await File(paths.vaultFile).readAsString();
+      expect(raw.contains('abcd-efgh'), isFalse);
+      expect(raw.contains('enc:v1:'), isTrue);
+    });
+
+    test('格式不对的恢复码会被拒绝', () async {
+      expect(
+        await run([
+          'add', 'github',
+          '--secret', 'JBSWY3DPEHPK3PXP',
+          '--recovery', '不 对',
+        ]),
+        ExitCode.usage,
+      );
+      expect(err.text, contains('格式不对'));
+    });
+
+    test('非交互终端（AI 调用）查看恢复码一律拒绝并记审计', () async {
+      await run([
+        'add', 'github',
+        '--secret', 'JBSWY3DPEHPK3PXP',
+        '--recovery', 'abcd-efgh',
+      ]);
+
+      expect(await run(['recovery', 'github']), ExitCode.denied);
+      expect(err.text, contains('交互终端'));
+      expect(out.text, isEmpty, reason: '被拒绝时不得输出任何恢复码');
+
+      await run(['audit', '--tail', '5']);
+      expect(out.text, contains('show_recovery_codes'));
+    });
+
+    test('人工在交互终端可以查看恢复码', () async {
+      await run([
+        'add', 'github',
+        '--secret', 'JBSWY3DPEHPK3PXP',
+        '--recovery', 'abcd-efgh',
+        '--recovery', '1234-5678',
+      ]);
+
+      final code = await run(
+        ['recovery', 'github'],
+        ctx: context(stdinIsTerminal: true),
+      );
+      expect(code, ExitCode.ok);
+      expect(out.text, contains('abcd-efgh'));
+      expect(out.text, contains('1234-5678'));
+      expect(out.text, contains('可用恢复码（2 个）'));
+    });
+
+    test('没录恢复码的账号给出说明而不是报错', () async {
+      await run(['add', 'github', '--secret', 'JBSWY3DPEHPK3PXP']);
+      final code = await run(
+        ['recovery', 'github'],
+        ctx: context(stdinIsTerminal: true),
+      );
+      expect(code, ExitCode.ok);
+      expect(out.text, contains('没有录恢复码'));
+    });
+  });
+
   group('AI / MCP 总开关', () {
     test('默认开启，status 能看出状态与设置文件', () async {
       expect(await run(['ai', 'status']), ExitCode.ok);

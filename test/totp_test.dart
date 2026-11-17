@@ -32,13 +32,21 @@ void main() {
       expect(acc!.secret, 'JBSWY3DPEHPK3PXP');
     });
 
-    test('非 otpauth / hotp / 缺 secret 均拒绝', () {
+    test('非 otpauth / 未知类型 / 缺 secret 均拒绝', () {
       expect(TotpAccount.fromOtpAuthUri('https://example.com'), isNull);
       expect(
-        TotpAccount.fromOtpAuthUri('otpauth://hotp/a:b?secret=JBSWY3DPEHPK3PXP'),
+        TotpAccount.fromOtpAuthUri('otpauth://motp/a:b?secret=JBSWY3DPEHPK3PXP'),
         isNull,
       );
       expect(TotpAccount.fromOtpAuthUri('otpauth://totp/a:b'), isNull);
+    });
+
+    test('hotp URI 解析出类型与计数器', () {
+      final acc = TotpAccount.fromOtpAuthUri(
+        'otpauth://hotp/Legacy:token?secret=JBSWY3DPEHPK3PXP&counter=5',
+      );
+      expect(acc!.type, TotpAccount.typeHotp);
+      expect(acc.counter, 5);
     });
   });
 

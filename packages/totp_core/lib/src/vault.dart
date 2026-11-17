@@ -19,6 +19,8 @@ class VaultError implements Exception {
 
 /// 加密 vault：账户密钥以 AES-256-GCM 加密后落盘，明文只存在于内存。
 ///
+/// 恢复码（备用码）与密钥同等敏感，同样逐条加密后落盘。
+///
 /// 文件格式（`~/.config/lzy_totp/vault.json`）：
 /// ```json
 /// {
@@ -26,7 +28,8 @@ class VaultError implements Exception {
 ///   "accounts": [
 ///     {"id":"...","issuer":"GitHub","label":"me@x.com","digits":6,
 ///      "period":30,"algorithm":"SHA1","aiAllowed":false,
-///      "secret":"enc:v1:<base64(nonce|mac|cipherText)>"}
+///      "secret":"enc:v1:<base64(nonce|mac|cipherText)>",
+///      "recoveryCodes":["enc:v1:<...>"],"usedRecoveryCodes":[]}
 ///   ]
 /// }
 /// ```
@@ -62,6 +65,11 @@ class VaultStore {
       final map = Map<String, dynamic>.from(raw as Map);
       final stored = map['secret'] as String? ?? '';
       map['secret'] = await _decrypt(stored, key);
+      // 恢复码同样按密文存（旧数据可能是明文，_decrypt 会原样返回）
+      map['recoveryCodes'] =
+          await _decryptList(map['recoveryCodes'], key);
+      map['usedRecoveryCodes'] =
+          await _decryptList(map['usedRecoveryCodes'], key);
       accounts.add(TotpAccount.fromJson(map));
     }
     return accounts;
@@ -76,6 +84,13 @@ class VaultStore {
     for (final account in accounts) {
       final map = account.toJson();
       map['secret'] = await _encrypt(account.secret, key);
+      // 恢复码与密钥同等敏感：逐条加密，不留明文
+      map['recoveryCodes'] = [
+        for (final code in account.recoveryCodes) await _encrypt(code, key),
+      ];
+      map['usedRecoveryCodes'] = [
+        for (final code in account.usedRecoveryCodes) await _encrypt(code, key),
+      ];
       out.add(map);
     }
 
@@ -125,6 +140,16 @@ class VaultStore {
     );
     return _cipherPrefix +
         base64Encode([...box.nonce, ...box.mac.bytes, ...box.cipherText]);
+  }
+
+  /// 批量解密一个字符串列表；非密文（早期明文数据）原样返回。
+  Future<List<String>> _decryptList(Object? raw, List<int> key) async {
+    if (raw is! List) return const <String>[];
+    final out = <String>[];
+    for (final item in raw) {
+      out.add(await _decrypt(item.toString(), key));
+    }
+    return out;
   }
 
   Future<String> _decrypt(String stored, List<int> key) async {

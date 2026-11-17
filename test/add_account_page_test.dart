@@ -133,4 +133,161 @@ void main() {
     expect(find.textContaining('请填写账户名'), findsNothing);
     expect(find.textContaining('密钥应为'), findsNothing);
   });
+
+  /// 表单比屏幕长，放大视口让所有字段一次性构建
+  void useTallViewport(WidgetTester tester) {
+    tester.view.physicalSize = const Size(700, 1800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+  }
+
+  group('恢复码录入', () {
+    /// 打开页面 → 填字段 → 保存 → 取回结果
+    Future<TotpAccount?> saveWith(
+      WidgetTester tester, {
+      String? recovery,
+      String label = 'GitHub',
+      String secret = 'JBSWY3DPEHPK3PXP',
+    }) async {
+      useTallViewport(tester);
+      TotpAccount? result;
+      await tester.pumpWidget(MaterialApp(
+        home: Builder(
+          builder: (context) => ElevatedButton(
+            onPressed: () async {
+              result = await Navigator.of(context).push<TotpAccount>(
+                MaterialPageRoute(builder: (_) => const AddAccountPage()),
+              );
+            },
+            child: const Text('open'),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(field('账户名 *'), label);
+      await tester.enterText(field('密钥 *'), secret);
+      if (recovery != null) {
+        await tester.enterText(field('恢复码（可选）'), recovery);
+      }
+      await tester.tap(find.widgetWithText(FilledButton, '保存'));
+      await tester.pumpAndSettle();
+      return result;
+    }
+
+    testWidgets('录入恢复码：每行一个，去掉空行', (tester) async {
+      final result = await saveWith(tester, recovery: 'abcd-efgh\n\n1234-5678\n');
+
+      expect(result, isNotNull);
+      expect(result!.recoveryCodes, ['abcd-efgh', '1234-5678']);
+      expect(result.recoveryCodeCount, 2);
+    });
+
+    testWidgets('不填恢复码也能保存（可选字段）', (tester) async {
+      final result = await saveWith(tester);
+
+      expect(result, isNotNull);
+      expect(result!.recoveryCodes, isEmpty);
+    });
+
+    testWidgets('格式不对的恢复码会被拦下并提示', (tester) async {
+      useTallViewport(tester);
+      await tester.pumpWidget(MaterialApp(
+        home: const AddAccountPage(),
+      ));
+      await tester.pump();
+
+      await tester.enterText(field('账户名 *'), 'GitHub');
+      await tester.enterText(field('密钥 *'), 'JBSWY3DPEHPK3PXP');
+      await tester.enterText(field('恢复码（可选）'), '不 对');
+      await tester.tap(find.widgetWithText(FilledButton, '保存'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('格式不对'), findsOneWidget);
+    });
+
+    testWidgets('编辑已有账号时预填原有恢复码', (tester) async {
+      await pumpForm(
+        tester,
+        initial: TotpAccount(
+          id: '1',
+          issuer: 'GitHub',
+          label: 'me@x.com',
+          secret: 'JBSWY3DPEHPK3PXP',
+          recoveryCodes: ['abcd-efgh', '1234-5678'],
+        ),
+        editing: true,
+      );
+
+      // 预填在输入框里（提示文案里也有同名字样，所以直接看 controller）
+      final input = tester.widget<TextFormField>(field('恢复码（可选）'));
+      expect(input.controller!.text, 'abcd-efgh\n1234-5678');
+    });
+  });
+
+  group('类型与时间', () {
+    testWidgets('类型选 HOTP：出现计数器、隐藏周期，保存带上 type 与 counter',
+        (tester) async {
+      useTallViewport(tester);
+      TotpAccount? result;
+      await tester.pumpWidget(MaterialApp(
+        home: Builder(
+          builder: (context) => ElevatedButton(
+            onPressed: () async {
+              result = await Navigator.of(context).push<TotpAccount>(
+                MaterialPageRoute(builder: (_) => const AddAccountPage()),
+              );
+            },
+            child: const Text('open'),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      // 默认 TOTP：有周期、没有计数器
+      expect(find.text('周期'), findsOneWidget);
+      expect(find.widgetWithText(TextFormField, '计数器'), findsNothing);
+
+      await tester.tap(find.text('TOTP（按时间）'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('HOTP（按计数器）').last);
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(TextFormField, '计数器'), findsOneWidget);
+      expect(find.text('周期'), findsNothing);
+
+      await tester.enterText(field('账户名 *'), 'Legacy 令牌');
+      await tester.enterText(field('密钥 *'), 'GEZDGNBVGY3TQOJQ');
+      await tester.enterText(
+          find.widgetWithText(TextFormField, '计数器'), '5');
+      await tester.tap(find.widgetWithText(FilledButton, '保存'));
+      await tester.pumpAndSettle();
+
+      expect(result, isNotNull);
+      expect(result!.type, TotpAccount.typeHotp);
+      expect(result!.counter, 5);
+      expect(result!.createdAt, isNotNull, reason: '新账号自动记创建时间');
+    });
+
+    testWidgets('失效日期：编辑时预填，保存沿用', (tester) async {
+      final expiring = TotpAccount(
+        id: '1',
+        issuer: 'GitHub',
+        label: 'me@x.com',
+        secret: 'JBSWY3DPEHPK3PXP',
+        expiresAt:
+            DateTime(2027, 3, 4, 23, 59, 59).millisecondsSinceEpoch,
+      );
+      await pumpForm(tester, initial: expiring, editing: true);
+
+      expect(find.text('2027-03-04'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, '保存修改'));
+      await tester.pumpAndSettle();
+
+      // 页面已 pop；用 initial 上的展示文本无法再断言，改由「无校验错误」证明可保存
+      expect(find.textContaining('请填写账户名'), findsNothing);
+    });
+  });
 }

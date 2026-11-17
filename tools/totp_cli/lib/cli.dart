@@ -85,6 +85,8 @@ Future<int> runCli(List<String> argv, CliContext ctx) async {
         return _info(ctx, command);
       case 'code':
         return _code(ctx, command);
+      case 'recovery':
+        return _recovery(ctx, command);
       case 'add':
         return _add(ctx, command);
       case 'remove':
@@ -142,11 +144,18 @@ ArgParser _buildParser() {
     ..addOption('period', allowed: ['30', '60'], defaultsTo: '30')
     ..addOption('algorithm',
         allowed: ['SHA1', 'SHA256', 'SHA512'], defaultsTo: 'SHA1')
+    ..addOption('type',
+        allowed: ['totp', 'hotp'], defaultsTo: 'totp', help: '类型：按时间 / 按计数器')
+    ..addOption('counter', defaultsTo: '0', help: 'HOTP 起始计数器')
+    ..addOption('expires', help: '失效日期 YYYY-MM-DD（到期只提醒，不阻止取码）')
+    ..addMultiOption('recovery',
+        help: '恢复码（可重复传入，或用逗号分隔多个）')
     ..addFlag('block-ai', negatable: false, help: '禁止 AI 取码（默认允许）');
 
   parser.addCommand('remove');
   parser.addCommand('allow');
   parser.addCommand('deny');
+  parser.addCommand('recovery');
   parser
       .addCommand('audit')
       .addOption('tail', defaultsTo: '20', help: '显示最近 N 条');
@@ -170,8 +179,11 @@ lzy_totp —— 一次性验证码（TOTP）命令行 / MCP 入口
   list                 列出账号（含是否允许 AI 取码）
   info <名称>          查看账号元数据（绝不返回密钥）
   code [名称]          输出当前验证码（vault 只有一个账号时可省略名称）
+  recovery <名称>      查看账号的恢复码（仅限人工在交互终端执行）
   add <名称>           添加账号（--secret <Base32> 或 --uri <otpauth://...>）
                        <名称> 即账户名，始终保留；--issuer 发行方、--note 备注
+                       --type totp|hotp（默认 totp）、--counter N（HOTP 起始计数）
+                       --expires YYYY-MM-DD 失效日期；--recovery <码> 录入恢复码
   remove <名称>        删除账号
   allow <名称>         允许 AI 取码（默认即允许）
   deny <名称>          禁止 AI 取码（黑名单）
@@ -183,11 +195,15 @@ lzy_totp —— 一次性验证码（TOTP）命令行 / MCP 入口
 
 示例：
   lzy_totp add github --secret JBSWY3DPEHPK3PXP --issuer GitHub --note 个人账号
+  lzy_totp add github --secret ... --recovery abcd-efgh,1234-5678   # 顺带录恢复码
+  lzy_totp add token --secret ... --type hotp --counter 0 --expires 2027-12-31
   lzy_totp code github --json
   lzy_totp info github                # 查看发行方 / 账户名 / 备注 / 是否允许 AI
+  lzy_totp recovery github            # 查看恢复码（只能人工在终端执行）
   lzy_totp deny "Bank (me@x.com)"     # 银行类账号排除在 AI 之外
 
 策略：默认放行，新增账号即可被 AI 取码；用 deny 关闭个别账号。
+恢复码与密钥同等敏感：加密存储、不经 MCP 暴露，CLI 侧只允许人工在交互终端查看。
 
 全局选项：
 ${parser.usage}''';
@@ -210,6 +226,8 @@ Future<int> _list(CliContext ctx, ArgResults cmd) async {
                 'digits': a.digits,
                 'period': a.period,
                 'algorithm': a.algorithm,
+                'type': a.type,
+                'counter': a.isHotp ? a.counter : null,
                 'ai_allowed': a.aiAllowed,
                 'note': a.note,
               })
@@ -226,8 +244,10 @@ Future<int> _list(CliContext ctx, ArgResults cmd) async {
   for (final a in accounts) {
     final flag = a.aiAllowed ? 'AI 允许' : 'AI 禁止';
     final note = a.note.isEmpty ? '' : '  # ${a.note}';
-    ctx.out.writeln(
-        '${a.displayTitle}  [$flag]  ${a.digits}位/${a.period}s/${a.algorithm}$note');
+    final params =
+        a.isHotp ? '${a.digits}位/${a.algorithm}' : '${a.digits}位/${a.period}s/${a.algorithm}';
+    final kind = a.isHotp ? '  HOTP#${a.counter}' : '';
+    ctx.out.writeln('${a.displayTitle}  [$flag]  $params$kind$note');
   }
   return ExitCode.ok;
 }
@@ -252,8 +272,21 @@ Future<int> _info(CliContext ctx, ArgResults cmd) async {
     ctx.out.writeln('发行方：${a.issuer.isEmpty ? '（未填）' : a.issuer}');
     ctx.out.writeln('账户名：${a.label.isEmpty ? '（未填）' : a.label}');
     ctx.out.writeln('备注：${a.note.isEmpty ? '（无）' : a.note}');
-    ctx.out.writeln('参数：${a.digits} 位 / ${a.period} 秒 / ${a.algorithm}');
+    ctx.out.writeln('类型：${a.isHotp ? 'HOTP（按计数器）' : 'TOTP（按时间）'}');
+    ctx.out.writeln('参数：${a.digits} 位 / ${a.isHotp ? '计数器 ${a.counter}' : '${a.period} 秒'}'
+        ' / ${a.algorithm}');
+    ctx.out.writeln('创建时间：${_fmtTime(a.createdAt) ?? '（未知，旧数据）'}');
+    ctx.out.writeln('最近取码：${_fmtTime(a.lastUsedAt) ?? '从未'}');
+    ctx.out.writeln('失效日期：${_fmtTime(a.expiresAt) ?? '未设置'}'
+        '${a.isExpired ? '（已过期，密钥可能已轮换）' : ''}');
     ctx.out.writeln('AI 取码：${a.aiAllowed ? '允许（默认）' : '已禁止'}');
+    if (a.hasRecoveryCodes) {
+      ctx.out.writeln('恢复码：${a.recoveryCodeCount} 个可用'
+          '${a.usedRecoveryCodes.isEmpty ? '' : '（另有 ${a.usedRecoveryCodes.length} 个已用）'}'
+          ' —— 用 lzy_totp recovery 查看');
+    } else {
+      ctx.out.writeln('恢复码：（未录入）');
+    }
   }
   return ExitCode.ok;
 }
@@ -332,26 +365,115 @@ Future<int> _code(CliContext ctx, ArgResults cmd) async {
   final remaining =
       TotpService.remainingSeconds(period: account.period, now: now);
 
+  // 记录「最近取码时间」；HOTP 还要把计数器 +1（服务端用掉一个码后同样 +1）。
+  // 落盘失败不影响取码结果——码已经算出来了，先给人用。
+  var nextCounter = account.counter;
+  try {
+    await ctx.vault.update((accounts) async {
+      final i = accounts.indexWhere((a) => a.id == account.id);
+      if (i >= 0) {
+        final updated = accounts[i].touch(now: now).advanceCounter();
+        nextCounter = updated.counter;
+        accounts[i] = updated;
+      }
+      return null;
+    });
+  } catch (_) {
+    // ignore: 时间戳/计数写不进去时仍要把码输出
+  }
+
   await ctx.audit.append(AuditEntry(
-    action: 'generate_totp',
+    action: account.isHotp ? 'generate_hotp' : 'generate_totp',
     account: account.displayTitle,
     result: 'ok',
     actor: 'cli',
-    note: overrideNote,
+    note: account.isHotp
+        ? 'counter=${account.counter}${overrideNote == null ? '' : ' $overrideNote'}'
+        : overrideNote,
   ));
 
   if (cmd['json'] as bool) {
-    ctx.out.writeln(_encode({
-      'account': account.displayTitle,
-      'code': code,
-      'remaining_seconds': remaining,
-      'period': account.period,
-      'expires_at':
-          now.add(Duration(seconds: remaining)).toUtc().toIso8601String(),
-    }));
+    if (account.isHotp) {
+      ctx.out.writeln(_encode({
+        'account': account.displayTitle,
+        'type': 'hotp',
+        'code': code,
+        'counter': account.counter,
+        'next_counter': nextCounter,
+      }));
+    } else {
+      ctx.out.writeln(_encode({
+        'account': account.displayTitle,
+        'type': 'totp',
+        'code': code,
+        'remaining_seconds': remaining,
+        'period': account.period,
+        'expires_at':
+            now.add(Duration(seconds: remaining)).toUtc().toIso8601String(),
+      }));
+    }
   } else {
     ctx.out.writeln(code);
+    if (account.isHotp) {
+      ctx.err.writeln('HOTP：本次用掉计数器 ${account.counter}，下一个是 $nextCounter');
+    }
   }
+  return ExitCode.ok;
+}
+
+/// recovery <名称> —— 查看账号的恢复码（备用码）。
+///
+/// 恢复码能绕过 TOTP 直接登录，敏感度**高于**验证码本身：
+/// - 只允许人工在交互终端里查看；AI 子进程（非 TTY）一律拒绝并记审计；
+/// - 查看动作同样进审计日志（谁在什么时候看了哪串恢复码）。
+Future<int> _recovery(CliContext ctx, ArgResults cmd) async {
+  final query = _firstArg(cmd);
+  if (query == null) {
+    ctx.err.writeln('用法：lzy_totp recovery <名称>');
+    return ExitCode.usage;
+  }
+
+  if (!ctx.stdinIsTerminal) {
+    await ctx.audit.append(AuditEntry(
+      action: 'show_recovery_codes',
+      account: query,
+      result: 'denied',
+      actor: 'cli',
+      note: 'non_tty',
+    ));
+    ctx.err.writeln('拒绝：恢复码只能由人工在交互终端查看。'
+        '（AI 子进程拿不到；请在终端里手动执行本命令。）');
+    return ExitCode.denied;
+  }
+
+  final result = await _resolve(ctx, query);
+  if (result.exitCode != null) return result.exitCode!;
+  final account = result.account!;
+
+  if (!account.hasRecoveryCodes) {
+    ctx.out.writeln('「${account.displayTitle}」没有录恢复码。');
+    return ExitCode.ok;
+  }
+
+  await ctx.audit.append(AuditEntry(
+    action: 'show_recovery_codes',
+    account: account.displayTitle,
+    result: 'ok',
+    actor: 'cli',
+  ));
+
+  ctx.out.writeln('账号：${account.displayTitle}');
+  ctx.out.writeln('可用恢复码（${account.recoveryCodeCount} 个）：');
+  for (final code in account.recoveryCodes) {
+    ctx.out.writeln('  $code');
+  }
+  if (account.usedRecoveryCodes.isNotEmpty) {
+    ctx.out.writeln('已用掉（${account.usedRecoveryCodes.length} 个）：');
+    for (final code in account.usedRecoveryCodes) {
+      ctx.out.writeln('  $code');
+    }
+  }
+  ctx.out.writeln('提示：恢复码用一次就作废一个；用完了请去网站重新生成一批。');
   return ExitCode.ok;
 }
 
@@ -365,6 +487,42 @@ Future<int> _add(CliContext ctx, ArgResults cmd) async {
   final uri = cmd['uri'] as String?;
   if ((secret == null) == (uri == null)) {
     ctx.err.writeln('必须且只能提供 --secret 或 --uri 之一。');
+    return ExitCode.usage;
+  }
+
+  // 失效日期：YYYY-MM-DD，存当天 23:59:59（当天仍然有效）
+  int? expiresAt;
+  final expiresRaw = cmd['expires'] as String?;
+  if (expiresRaw != null && expiresRaw.isNotEmpty) {
+    final parsed = DateTime.tryParse(expiresRaw);
+    if (parsed == null) {
+      ctx.err.writeln('失效日期格式不对：应为 YYYY-MM-DD。');
+      return ExitCode.usage;
+    }
+    expiresAt = DateTime(parsed.year, parsed.month, parsed.day, 23, 59, 59)
+        .millisecondsSinceEpoch;
+  }
+
+  final counterRaw = int.tryParse(cmd['counter'] as String? ?? '0');
+  if (counterRaw == null || counterRaw < 0) {
+    ctx.err.writeln('--counter 应为非负整数。');
+    return ExitCode.usage;
+  }
+  final type = (cmd['type'] as String? ?? 'totp').toLowerCase();
+
+  // 恢复码：可重复传 --recovery，也可用逗号 / 空格分隔多个
+  final recoveryCodes = <String>[];
+  for (final raw in (cmd['recovery'] as List<String>? ?? const <String>[])) {
+    recoveryCodes.addAll(
+      raw.split(RegExp(r'[\s,;]+')).where((s) => s.isNotEmpty),
+    );
+  }
+  final normalizedRecovery = TotpAccount.normalizeRecoveryCodes(recoveryCodes);
+  final badRecovery =
+      normalizedRecovery.where((c) => !TotpAccount.isValidRecoveryCode(c));
+  if (badRecovery.isNotEmpty) {
+    ctx.err.writeln('恢复码「${badRecovery.first}」格式不对：'
+        '应为字母 / 数字（可含 - 或 _），至少 4 位。');
     return ExitCode.usage;
   }
 
@@ -385,8 +543,16 @@ Future<int> _add(CliContext ctx, ArgResults cmd) async {
       digits: parsed.digits,
       period: parsed.period,
       algorithm: parsed.algorithm,
+      // 命令行显式给的 type / counter 优先于 URI 里的
+      type: (cmd['type'] as String?) == null ? parsed.type : type,
+      counter: (cmd['type'] as String?) == null && parsed.isHotp
+          ? parsed.counter
+          : counterRaw,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+      expiresAt: expiresAt,
       aiAllowed: allowAi,
       note: (cmd['note'] as String?) ?? '',
+      recoveryCodes: normalizedRecovery,
     );
   } else {
     final normalized = secret!.toUpperCase().replaceAll(RegExp(r'\s'), '');
@@ -403,8 +569,13 @@ Future<int> _add(CliContext ctx, ArgResults cmd) async {
       digits: int.parse(cmd['digits'] as String),
       period: int.parse(cmd['period'] as String),
       algorithm: cmd['algorithm'] as String,
+      type: type,
+      counter: counterRaw,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+      expiresAt: expiresAt,
       aiAllowed: allowAi,
       note: (cmd['note'] as String?) ?? '',
+      recoveryCodes: normalizedRecovery,
     );
     try {
       TotpService.codeFor(account);
@@ -708,8 +879,27 @@ Map<String, dynamic> _metadata(TotpAccount a) => {
       'digits': a.digits,
       'period': a.period,
       'algorithm': a.algorithm,
+      'type': a.type,
+      'counter': a.isHotp ? a.counter : null,
+      'created_at': _isoTime(a.createdAt),
+      'last_used_at': _isoTime(a.lastUsedAt),
+      'expires_at': _isoTime(a.expiresAt),
+      'expired': a.isExpired,
       'ai_allowed': a.aiAllowed,
       'note': a.note,
     };
+
+/// epoch 毫秒 → 本地时间字符串（YYYY-MM-DD HH:mm），空值返回 null
+String? _fmtTime(int? ms) {
+  if (ms == null) return null;
+  final d = DateTime.fromMillisecondsSinceEpoch(ms);
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
+}
+
+/// epoch 毫秒 → ISO8601（JSON 输出用），空值返回 null
+String? _isoTime(int? ms) => ms == null
+    ? null
+    : DateTime.fromMillisecondsSinceEpoch(ms).toIso8601String();
 
 String _encode(Object value) => const JsonEncoder.withIndent('  ').convert(value);
