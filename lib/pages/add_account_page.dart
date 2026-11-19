@@ -186,6 +186,12 @@ class _AddAccountPageState extends State<AddAccountPage> {
     final editing = widget.editing;
     return Scaffold(
       appBar: AppBar(title: Text(editing ? '编辑账户' : '手动添加')),
+      // 主操作固定在屏幕底部：Scaffold 会给它留出位置，SnackBar 之类的底部浮层
+      // 一律排在它上面，不会再出现「撤销」提示条压住「保存」按钮的情况。
+      bottomNavigationBar: _SaveBar(
+        label: editing ? '保存修改' : '保存',
+        onPressed: _save,
+      ),
       body: Form(
         key: _formKey,
         child: ListView(
@@ -375,12 +381,46 @@ class _AddAccountPageState extends State<AddAccountPage> {
               ),
             ],
             const SizedBox(height: 32),
-            FilledButton.icon(
-              onPressed: _save,
-              icon: const Icon(Icons.check),
-              label: Text(editing ? '保存修改' : '保存'),
-            ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 底部固定的主操作栏（保存 / 保存修改）。
+///
+/// - 固定在屏幕底部：Scaffold 给它留出空间后，SnackBar 等底部浮层会自动排在它**上面**，
+///   「撤销」提示条再也不会压住「保存」按钮；
+/// - 键盘弹起时（Android）整条栏顶到键盘上方，按钮始终露在外面、点得到。
+class _SaveBar extends StatelessWidget {
+  const _SaveBar({required this.label, required this.onPressed});
+
+  final String label;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final keyboard = MediaQuery.viewInsetsOf(context).bottom;
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
+      ),
+      // 键盘高度补在下面：按钮本身被顶到键盘上沿
+      padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + keyboard),
+      child: SafeArea(
+        top: false,
+        // 键盘已经占了下沿，此时不再重复留安全区
+        bottom: keyboard == 0,
+        child: SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: onPressed,
+            icon: const Icon(Icons.check),
+            label: Text(label),
+          ),
         ),
       ),
     );

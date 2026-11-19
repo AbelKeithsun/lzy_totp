@@ -17,6 +17,26 @@ import 'recovery_codes_sheet.dart';
 import 'settings_page.dart';
 import 'scan_page.dart';
 
+/// 提示条上挂着的可撤销操作。
+///
+/// 提示条由根 ScaffoldMessenger 统一派发，会同时画到**所有**已注册的 Scaffold 上——
+/// 列表页与推入的表单页各有一块，于是列表页的「撤销」会浮到表单页底部、
+/// 正好压住「保存」按钮。为避免这一点，离开列表页时先把提示条收起
+/// （把这里的操作暂存到 [_AccountListPageState._pendingUndo]），
+/// 回到列表页再补上：撤销能力不丢，提示也不会跑到别的页面去。
+class _UndoAction {
+  const _UndoAction(this.message, this.action, this.label);
+
+  /// 提示文案（收起后重新挂上时还要用）
+  final String message;
+
+  /// 点击撤销时做的事
+  final VoidCallback action;
+
+  /// 撤销按钮的文案（「撤销」或「从 vault 移除」）
+  final String label;
+}
+
 /// 首页：账户列表 + 实时刷新的验证码
 class AccountListPage extends StatefulWidget {
   const AccountListPage({
@@ -46,8 +66,17 @@ class _AccountListPageState extends State<AccountListPage> {
   List<TotpAccount> _accounts = [];
   Timer? _timer;
 
-  /// vault 里的账号快照，用来显示每行的「同步给 AI」状态
+  /// AI vault 里的账号快照，用来显示每行的「同步给 AI」状态
   List<TotpAccount> _vaultAccounts = [];
+
+  /// 当前提示条上的撤销操作（提示条被收起时暂存到 [_pendingUndo]）
+  _UndoAction? _undo;
+
+  /// 离开列表页时暂存的撤销操作，回到列表页后重新挂上
+  _UndoAction? _pendingUndo;
+
+  /// 提示条序号：用来判断「关闭回调」说的是不是当前这条提示条
+  int _snackSeq = 0;
 
   late final AiVaultService _aiVault = widget.aiVault ?? AiVaultService();
 
@@ -148,6 +177,9 @@ class _AccountListPageState extends State<AccountListPage> {
     }
     if (choice == null || !mounted) return;
 
+    // 去表单页前收起提示条：「撤销」不许浮到「保存」按钮上
+    _stashUndo();
+
     final scanned = await Navigator.of(context).push<TotpAccount>(
       MaterialPageRoute(
         builder: (_) => choice == 'scan'
@@ -155,7 +187,11 @@ class _AccountListPageState extends State<AccountListPage> {
             : const AddAccountPage(),
       ),
     );
-    if (scanned == null || !mounted) return;
+    if (!mounted) return;
+    if (scanned == null) {
+      _restoreUndo();
+      return;
+    }
 
     // 账户名必填：二维码里没带名称时，带着已解析的参数让用户补一个再入库
     var account = scanned;
@@ -163,9 +199,16 @@ class _AccountListPageState extends State<AccountListPage> {
       final completed = await Navigator.of(context).push<TotpAccount>(
         MaterialPageRoute(builder: (_) => AddAccountPage(initial: account)),
       );
-      if (completed == null || !mounted) return;
+      if (!mounted) return;
+      if (completed == null) {
+        _restoreUndo();
+        return;
+      }
       account = completed;
     }
+
+    _restoreUndo();
+    if (!mounted) return;
 
     setState(() => _accounts.add(account));
     await _persist();
@@ -200,16 +243,8 @@ class _AccountListPageState extends State<AccountListPage> {
     setState(() => _accounts.removeAt(index));
     await _persist();
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(
-        content: Text('已删除「${account.displayTitle}」'),
-        duration: const Duration(seconds: 4),
-        action: SnackBarAction(
-          label: '撤销',
-          onPressed: () => _restoreAccount(account, index),
-        ),
-      ));
+    _snack('已删除「${account.displayTitle}」',
+        undo: () => _restoreAccount(account, index));
   }
 
   Future<void> _restoreAccount(TotpAccount account, int index) async {
@@ -221,15 +256,24 @@ class _AccountListPageState extends State<AccountListPage> {
   /// 打开编辑页补全账户名 / 发行方 / 备注，保存后写回本地存储；
   /// 若该账号已同步给 AI，vault 里的条目也跟着更新（避免 agent 看到旧名字）。
   Future<void> _editAccount(TotpAccount account) async {
+    // 去表单页前收起提示条：「撤销」不许浮到「保存」按钮上
+    _stashUndo();
     final updated = await Navigator.of(context).push<TotpAccount>(
       MaterialPageRoute(
         builder: (_) => AddAccountPage(initial: account, editing: true),
       ),
     );
-    if (updated == null || !mounted) return;
+    if (!mounted) return;
+    if (updated == null) {
+      _restoreUndo();
+      return;
+    }
 
     final index = _accounts.indexWhere((a) => a.id == account.id);
-    if (index < 0) return;
+    if (index < 0) {
+      _restoreUndo();
+      return;
+    }
     setState(() => _accounts[index] = updated);
     await _persist();
     if (!mounted) return;
@@ -242,13 +286,16 @@ class _AccountListPageState extends State<AccountListPage> {
         await _reloadVault();
         if (!mounted) return;
         _snack('已保存「${updated.displayTitle}」，并更新了 vault 里的条目');
+        _restoreUndo();
         return;
       } catch (e) {
         _snackError('已保存，但更新 AI vault 失败：${_describe(e)}');
+        _restoreUndo();
         return;
       }
     }
     _snack('已保存「${updated.displayTitle}」');
+    _restoreUndo();
   }
 
   /// 点一下：把 App 里已录入的账号写进 AI vault（或按状态给出说明）
@@ -299,17 +346,13 @@ class _AccountListPageState extends State<AccountListPage> {
 
   /// 已在 vault 但被 CLI 的 deny 挡住：说明原因，并提供「从 vault 移除」
   void _showDeniedHint(TotpAccount account) {
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(
-        content: Text('「${account.displayTitle}」已被 lzy-totp deny 禁止 AI 取码；'
-            '如需放开请执行 lzy-totp allow'),
-        duration: const Duration(seconds: 6),
-        action: SnackBarAction(
-          label: '从 vault 移除',
-          onPressed: () => _unlinkFromVault(account),
-        ),
-      ));
+    _snack(
+      '「${account.displayTitle}」已被 lzy-totp deny 禁止 AI 取码；'
+      '如需放开请执行 lzy-totp allow',
+      undo: () => _unlinkFromVault(account),
+      undoLabel: '从 vault 移除',
+      duration: const Duration(seconds: 6),
+    );
   }
 
   String _describe(Object e) {
@@ -317,19 +360,74 @@ class _AccountListPageState extends State<AccountListPage> {
     return text.startsWith('VaultError: ') ? text.substring(12) : text;
   }
 
-  void _snack(String message, {VoidCallback? undo}) {
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 4),
-        action: undo == null
-            ? null
-            : SnackBarAction(label: '撤销', onPressed: undo),
-      ));
+  /// 显示一条提示条。
+  ///
+  /// [undo] 不为空时带上撤销按钮（文案用 [undoLabel]）。提示条被系统自动收起后，
+  /// 待撤销的操作一并作废，免得过期的「已删除」又冒出来。
+  void _snack(
+    String message, {
+    VoidCallback? undo,
+    String undoLabel = '撤销',
+    Duration duration = const Duration(seconds: 4),
+  }) {
+    final seq = ++_snackSeq;
+    // 点过撤销就作废待撤销状态，免得又冒出一次「已删除」
+    final VoidCallback? onUndo = undo == null
+        ? null
+        : () {
+            _undo = null;
+            undo();
+          };
+    final action =
+        undo == null ? null : _UndoAction(message, onUndo!, undoLabel);
+    _undo = action;
+    final messenger = ScaffoldMessenger.of(context)..clearSnackBars();
+    final controller = messenger.showSnackBar(SnackBar(
+      content: Text(message),
+      duration: duration,
+      action: onUndo == null
+          ? null
+          : SnackBarAction(label: undoLabel, onPressed: onUndo),
+    ));
+    controller.closed.then((reason) {
+      if (seq != _snackSeq) return; // 已经不是当前这条提示条了
+      if (reason != SnackBarClosedReason.action) _undo = null;
+    });
+  }
+
+  /// 离开列表页前收起提示条。
+  ///
+  /// 提示条由根 ScaffoldMessenger 派发，会同时画到**所有**已注册的 Scaffold 上——
+  /// 列表页和推入的表单页各有一块，于是列表页的「撤销」会浮到表单页底部、
+  /// 正好压住「保存」按钮。所以去别的页面前先把它收起来，把待撤销的操作记下来，
+  /// 回到列表页再补上：撤销能力不丢，提示也不会跑到别的页面去。
+  void _stashUndo() {
+    _pendingUndo = _undo;
+    _undo = null;
+    ScaffoldMessenger.of(context).clearSnackBars();
+  }
+
+  /// 回到列表页：把暂存的撤销操作重新挂上（排队显示，不打断当前提示条）
+  void _restoreUndo() {
+    final pending = _pendingUndo;
+    _pendingUndo = null;
+    if (pending == null) return;
+    final seq = ++_snackSeq;
+    _undo = pending;
+    final controller = ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(pending.message),
+      duration: const Duration(seconds: 4),
+      action: SnackBarAction(label: pending.label, onPressed: pending.action),
+    ));
+    controller.closed.then((reason) {
+      if (seq != _snackSeq) return;
+      if (reason != SnackBarClosedReason.action) _undo = null;
+    });
   }
 
   void _snackError(String message) {
+    _snackSeq++; // 之前的提示条回调作废
+    _undo = null;
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(
@@ -340,6 +438,7 @@ class _AccountListPageState extends State<AccountListPage> {
   }
 
   Future<void> _openSettings() async {
+    _stashUndo();
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => SettingsPage(
@@ -351,12 +450,15 @@ class _AccountListPageState extends State<AccountListPage> {
     );
     // 回来时刷新总开关状态（可能刚被关掉）
     await _load();
+    if (mounted) _restoreUndo();
   }
 
-  void _openAiAccess() {
-    Navigator.of(context).push(
+  Future<void> _openAiAccess() async {
+    _stashUndo();
+    await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const AiAccessPage()),
     );
+    if (mounted) _restoreUndo();
   }
 
   /// 复制验证码：顺带记录「最近取码时间」；HOTP 还要把计数器 +1。
@@ -378,12 +480,10 @@ class _AccountListPageState extends State<AccountListPage> {
     }
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(
-        content: Text(account.isHotp ? '验证码已复制（HOTP 计数器已 +1）' : '验证码已复制'),
-        duration: const Duration(seconds: 1),
-      ));
+    _snack(
+      account.isHotp ? '验证码已复制（HOTP 计数器已 +1）' : '验证码已复制',
+      duration: const Duration(seconds: 1),
+    );
 
     // HOTP 的计数必须两边一致，否则 CLI 会拿旧计数生成已失效的码
     if (!account.isHotp || !_aiSyncEnabled) return;
@@ -400,6 +500,7 @@ class _AccountListPageState extends State<AccountListPage> {
 
   /// 账户详情：类型、参数、创建 / 最近取码 / 失效时间、恢复码与 AI 权限
   Future<void> _showDetail(TotpAccount account) async {
+    _stashUndo();
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -411,12 +512,14 @@ class _AccountListPageState extends State<AccountListPage> {
             : null,
       ),
     );
+    if (mounted) _restoreUndo();
   }
 
   /// 查看恢复码：可复制、可标记已用、可删除；改动立刻落库。
   ///
   /// 若该账号已同步给 AI vault，vault 里的条目也一并更新（保持两边一致）。
   Future<void> _showRecoveryCodes(TotpAccount account) async {
+    _stashUndo();
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -442,6 +545,7 @@ class _AccountListPageState extends State<AccountListPage> {
         },
       ),
     );
+    if (mounted) _restoreUndo();
   }
 
   @override
